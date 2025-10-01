@@ -235,8 +235,8 @@ function FormField({ name, schema, value, onChange }: FormFieldProps) {
 
   // Return the field with appropriate grid column spanning
   const getColumnSpan = () => {
-    if (shouldSpanFullWidth) return "md:col-span-3 xl:col-span-4";
-    if (shouldSpanTwoColumns) return "xl:col-span-2";
+    if (shouldSpanFullWidth) return "md:col-span-2 lg:col-span-3 xl:col-span-4";
+    if (shouldSpanTwoColumns) return "md:col-span-2 xl:col-span-2";
     return "";
   };
 
@@ -440,10 +440,10 @@ export function WorkflowInputForm({
           {/* Scrollable Form Content */}
           <div className="px-8 py-6 overflow-y-auto flex-1 min-h-0">
             <form id="workflow-modal-form" onSubmit={handleSubmit}>
-              <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-8 max-w-none">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 md:gap-8 max-w-none">
                 {/* Simple input */}
                 {isSimpleInput && primaryField && (
-                  <div className="md:col-span-3 xl:col-span-4">
+                  <div className="md:col-span-2 lg:col-span-3 xl:col-span-4">
                     <FormField
                       name="Input"
                       schema={inputSchema}

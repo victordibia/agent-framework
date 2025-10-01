@@ -151,6 +151,20 @@ class AgentFrameworkExecutor:
                 if not display_contents:
                     continue
 
+                # Extract usage information if present
+                usage_data = None
+                for content in af_msg.contents:
+                    content_type = getattr(content, "type", None)
+                    if content_type == "usage":
+                        details = getattr(content, "details", None)
+                        if details:
+                            usage_data = {
+                                "total_tokens": getattr(details, "total_token_count", 0) or 0,
+                                "prompt_tokens": getattr(details, "input_token_count", 0) or 0,
+                                "completion_tokens": getattr(details, "output_token_count", 0) or 0,
+                            }
+                        break
+
                 ui_message = {
                     "id": af_msg.message_id or f"restored-{i}",
                     "role": role,
@@ -159,6 +173,10 @@ class AgentFrameworkExecutor:
                     "author_name": af_msg.author_name,
                     "message_id": af_msg.message_id,
                 }
+
+                # Add usage data if available
+                if usage_data:
+                    ui_message["usage"] = usage_data
 
                 ui_messages.append(ui_message)
 
