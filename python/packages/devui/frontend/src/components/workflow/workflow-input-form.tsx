@@ -236,7 +236,7 @@ function FormField({ name, schema, value, onChange }: FormFieldProps) {
   // Return the field with appropriate grid column spanning
   const getColumnSpan = () => {
     if (shouldSpanFullWidth) return "md:col-span-2 lg:col-span-3 xl:col-span-4";
-    if (shouldSpanTwoColumns) return "md:col-span-2 xl:col-span-2";
+    if (shouldSpanTwoColumns) return "xl:col-span-2";
     return "";
   };
 
