@@ -368,6 +368,32 @@ def _parse_dict_input(input_dict: dict[str, Any], target_type: type) -> Any:
     Returns:
         Parsed input or original dict
     """
+    # Handle primitive types - extract from common field names
+    if target_type in (str, int, float, bool):
+        try:
+            # If it's already the right type, return as-is
+            if isinstance(input_dict, target_type):
+                return input_dict
+
+            # Try "input" field first (common for workflow inputs)
+            if "input" in input_dict:
+                return target_type(input_dict["input"])  # type: ignore
+
+            # If single-key dict, extract the value
+            if len(input_dict) == 1:
+                value = next(iter(input_dict.values()))
+                return target_type(value)  # type: ignore
+
+            # Otherwise, return as-is
+            return input_dict
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to convert dict to {target_type}: {e}")
+            return input_dict
+
+    # If target is dict, return as-is
+    if target_type is dict:
+        return input_dict
+
     # Pydantic models
     if hasattr(target_type, "model_validate"):
         try:
