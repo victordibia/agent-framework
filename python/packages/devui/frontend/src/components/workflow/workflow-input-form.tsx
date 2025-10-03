@@ -35,14 +35,19 @@ interface FormFieldProps {
 function FormField({ name, schema, value, onChange, isRequired = false }: FormFieldProps) {
   const { type, description, enum: enumValues, default: defaultValue } = schema;
 
+  // For text/message/content fields, treat as textarea for better UX
+  const isTextContentField = ['text', 'message', 'content', 'query', 'prompt'].includes(name.toLowerCase());
+
   // Determine if this field should span full width
   // Only span full if it's a textarea or has very long description
   const shouldSpanFullWidth =
     schema.format === "textarea" ||
+    isTextContentField ||  // text/message fields span full width
     (description && description.length > 150);
 
   const shouldSpanTwoColumns =
     schema.format === "textarea" ||
+    isTextContentField ||
     (description && description.length > 80) ||
     type === "array";  // Arrays might need more space for comma-separated values
 
@@ -86,9 +91,10 @@ function FormField({ name, schema, value, onChange, isRequired = false }: FormFi
           );
         } else if (
           schema.format === "textarea" ||
+          isTextContentField ||
           (description && description.length > 100)
         ) {
-          // Multi-line text
+          // Multi-line text (including text/message/content fields)
           return (
             <div className="space-y-2">
               <Label htmlFor={name}>
@@ -104,7 +110,7 @@ function FormField({ name, schema, value, onChange, isRequired = false }: FormFi
                     ? defaultValue
                     : `Enter ${name}`
                 }
-                rows={2}
+                rows={isTextContentField ? 4 : 2}
               />
               {description && (
                 <p className="text-sm text-muted-foreground">{description}</p>
@@ -293,26 +299,52 @@ export function WorkflowInputForm({
   const requiredFields = inputSchema.required || [];
   const isSimpleInput = inputSchema.type === "string" && !inputSchema.enum;
 
-  // Plan D: Separate required and optional fields
-  const requiredFieldNames = fieldNames.filter(name => requiredFields.includes(name));
-  const optionalFieldNames = fieldNames.filter(name => !requiredFields.includes(name));
+  // Plan D: Separate required and optional fields first
+  const allOptionalFieldNames = fieldNames.filter(name => !requiredFields.includes(name));
 
-  // Always show ALL required fields + fill to minimum 6 visible with optional fields
-  const MIN_VISIBLE_FIELDS = 6;
+  // Detect ChatMessage-like pattern
+  const isChatMessageLike =
+    requiredFields.includes('role') &&
+    allOptionalFieldNames.some(f => ['text', 'message', 'content'].includes(f)) &&
+    properties['role']?.type === 'string';
+
+  // For ChatMessage: hide 'role' field (will be auto-filled)
+  const requiredFieldNames = fieldNames.filter(name =>
+    requiredFields.includes(name) && !(isChatMessageLike && name === 'role')
+  );
+  const optionalFieldNames = allOptionalFieldNames;
+
+  // For ChatMessage: prioritize text/message/content field to show first
+  const sortedOptionalFields = isChatMessageLike
+    ? [...optionalFieldNames].sort((a, b) => {
+        const priority = (name: string) =>
+          ['text', 'message', 'content'].includes(name) ? 1 : 0;
+        return priority(b) - priority(a);
+      })
+    : optionalFieldNames;
+
+  // Always show ALL required fields + fill to minimum visible with optional fields
+  // For ChatMessage: show only 1 optional field (text)
+  const MIN_VISIBLE_FIELDS = isChatMessageLike ? 1 : 6;
   const visibleOptionalCount = Math.max(0, MIN_VISIBLE_FIELDS - requiredFieldNames.length);
-  const visibleOptionalFields = optionalFieldNames.slice(0, visibleOptionalCount);
-  const collapsedOptionalFields = optionalFieldNames.slice(visibleOptionalCount);
+  const visibleOptionalFields = sortedOptionalFields.slice(0, visibleOptionalCount);
+  const collapsedOptionalFields = sortedOptionalFields.slice(visibleOptionalCount);
 
   const hasCollapsedFields = collapsedOptionalFields.length > 0;
   const hasRequiredFields = requiredFieldNames.length > 0;
 
   // Update canSubmit to check required fields properly
+  // For ChatMessage: role is auto-filled, so it's always valid
   const canSubmit = isSimpleInput
     ? formData.value !== undefined && formData.value !== ""
     : requiredFields.length > 0
-    ? requiredFields.every(fieldName =>
-        formData[fieldName] !== undefined && formData[fieldName] !== ""
-      )
+    ? requiredFields.every(fieldName => {
+        // Auto-filled fields are always valid
+        if (isChatMessageLike && fieldName === 'role' && formData['role'] === 'user') {
+          return true;
+        }
+        return formData[fieldName] !== undefined && formData[fieldName] !== "";
+      })
     : Object.keys(formData).length > 0;
 
   // Initialize form data
@@ -328,9 +360,15 @@ export function WorkflowInputForm({
           initialData[key] = fieldSchema.enum[0];
         }
       });
+
+      // Auto-fill role="user" for ChatMessage-like inputs
+      if (isChatMessageLike && !initialData['role']) {
+        initialData['role'] = 'user';
+      }
+
       setFormData(initialData);
     }
-  }, [inputSchema]);
+  }, [inputSchema, isChatMessageLike]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
