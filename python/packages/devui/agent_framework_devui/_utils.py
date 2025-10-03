@@ -96,7 +96,7 @@ def _type_to_schema(type_hint: Any, field_name: str) -> dict[str, Any]:
     return {"type": "string", "description": f"Type: {type_hint}"}
 
 
-def generate_schema_from_serialization_mixin(cls: type) -> dict[str, Any]:
+def generate_schema_from_serialization_mixin(cls: type[Any]) -> dict[str, Any]:
     """Generate JSON schema from SerializationMixin class.
 
     Introspects the __init__ signature to extract parameter types and defaults.
@@ -107,13 +107,13 @@ def generate_schema_from_serialization_mixin(cls: type) -> dict[str, Any]:
     Returns:
         JSON schema dict
     """
-    sig = inspect.signature(cls.__init__)
+    sig = inspect.signature(cls)
 
     # Get type hints
     try:
         from typing import get_type_hints
 
-        type_hints = get_type_hints(cls.__init__)
+        type_hints = get_type_hints(cls)
     except Exception:
         type_hints = {}
 
@@ -143,7 +143,7 @@ def generate_schema_from_serialization_mixin(cls: type) -> dict[str, Any]:
     return schema
 
 
-def generate_schema_from_dataclass(cls: type) -> dict[str, Any]:
+def generate_schema_from_dataclass(cls: type[Any]) -> dict[str, Any]:
     """Generate JSON schema from dataclass.
 
     Args:
@@ -314,7 +314,7 @@ def _parse_string_input(input_str: str, target_type: type) -> Any:
             # For ChatMessage specifically: create from text
             # Try common field patterns
             common_fields = ["text", "message", "content"]
-            sig = inspect.signature(target_type.__init__)
+            sig = inspect.signature(target_type)
             params = list(sig.parameters.keys())
 
             # If it has 'text' param, use it
