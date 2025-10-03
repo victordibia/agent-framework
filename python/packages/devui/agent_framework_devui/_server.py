@@ -222,6 +222,8 @@ class DevServer:
                         start_executor_id = ""
 
                         try:
+                            from ._utils import generate_input_schema
+
                             start_executor = entity_obj.get_start_executor()
                             if start_executor and hasattr(start_executor, "_handlers"):
                                 message_types = list(start_executor._handlers.keys())
@@ -229,13 +231,8 @@ class DevServer:
                                     input_type = message_types[0]
                                     input_type_name = getattr(input_type, "__name__", str(input_type))
 
-                                    # Basic schema generation for common types
-                                    if input_type is str:
-                                        input_schema = {"type": "string"}
-                                    elif input_type is dict:
-                                        input_schema = {"type": "object"}
-                                    elif hasattr(input_type, "model_json_schema"):
-                                        input_schema = input_type.model_json_schema()
+                                    # Generate schema using comprehensive schema generation
+                                    input_schema = generate_input_schema(input_type)
 
                                     start_executor_id = getattr(start_executor, "executor_id", "")
                         except Exception as e:
