@@ -1162,7 +1162,7 @@ def _replace_approval_contents_with_results(
     approved_function_results: "list[Contents]",
 ) -> None:
     """Replace approval request/response contents with function call/result contents in-place."""
-    from ._types import FunctionApprovalRequestContent, FunctionApprovalResponseContent, FunctionResultContent
+    from ._types import FunctionApprovalRequestContent, FunctionApprovalResponseContent, FunctionResultContent, Role
 
     result_idx = 0
     for msg in messages:
@@ -1176,12 +1176,14 @@ def _replace_approval_contents_with_results(
                     if result_idx < len(approved_function_results):
                         msg.contents[content_idx] = approved_function_results[result_idx]
                         result_idx += 1
+                        msg.role = Role.TOOL
                 else:
                     # Create a "not approved" result for rejected calls
                     msg.contents[content_idx] = FunctionResultContent(
                         call_id=content.id,
                         result="Error: Tool call invocation was rejected by user.",
                     )
+                    msg.role = Role.TOOL
 
 
 def _handle_function_calls_response(
