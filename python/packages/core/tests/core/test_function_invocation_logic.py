@@ -391,6 +391,15 @@ async def test_rejected_approval(chat_client_base: ChatClientProtocol):
     assert rejected_result.result == "Error: Tool call invocation was rejected by user."
     assert exec_counter_rejected == 0
 
+    # Verify that messages with FunctionResultContent have role="tool"
+    # This ensures the message format is correct for OpenAI's API
+    for msg in all_messages:
+        for content in msg.contents:
+            if isinstance(content, FunctionResultContent):
+                assert msg.role == Role.TOOL, (
+                    f"Message with FunctionResultContent must have role='tool', got '{msg.role}'"
+                )
+
 
 async def test_max_iterations_limit(chat_client_base: ChatClientProtocol):
     """Test that MAX_ITERATIONS in additional_properties limits function call loops."""
