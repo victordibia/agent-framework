@@ -1142,7 +1142,7 @@ def _extract_tools(kwargs: dict[str, Any]) -> Any:
     return tools
 
 
-def _collect_approval_todos(
+def _collect_approval_responses(
     messages: "list[ChatMessage]",
 ) -> dict[str, "FunctionApprovalResponseContent"]:
     """Collect approval responses (both approved and rejected) from messages."""
@@ -1174,7 +1174,9 @@ def _replace_approval_contents_with_results(
     result_idx = 0
     for msg in messages:
         # First pass - collect existing function call IDs to avoid duplicates
-        existing_call_ids = {content.call_id for content in msg.contents if isinstance(content, FunctionCallContent)}
+        existing_call_ids = {
+            content.call_id for content in msg.contents if isinstance(content, FunctionCallContent) and content.call_id
+        }
 
         # Track approval requests that should be removed (duplicates)
         contents_to_remove = []
@@ -1259,7 +1261,7 @@ def _handle_function_calls_response(
             response: "ChatResponse | None" = None
             fcc_messages: "list[ChatMessage]" = []
             for attempt_idx in range(instance_max_iterations):
-                fcc_todo = _collect_approval_todos(prepped_messages)
+                fcc_todo = _collect_approval_responses(prepped_messages)
                 if fcc_todo:
                     tools = _extract_tools(kwargs)
                     # Only execute APPROVED function calls, not rejected ones
@@ -1406,7 +1408,7 @@ def _handle_function_calls_streaming_response(
             prepped_messages = prepare_messages(messages)
             fcc_messages: "list[ChatMessage]" = []
             for attempt_idx in range(instance_max_iterations):
-                fcc_todo = _collect_approval_todos(prepped_messages)
+                fcc_todo = _collect_approval_responses(prepped_messages)
                 if fcc_todo:
                     tools = _extract_tools(kwargs)
                     # Only execute APPROVED function calls, not rejected ones
