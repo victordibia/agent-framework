@@ -8,7 +8,7 @@ namespace Microsoft.Agents.AI.DevUI.Samples;
 /// </summary>
 public static class SimpleWorkflow
 {
-    public static Workflow Create()
+    public static async Task<Workflow<string>> CreateAsync()
     {
         // Create the executors
         var processExecutor = new ProcessTextExecutor();
@@ -18,7 +18,7 @@ public static class SimpleWorkflow
         var builder = new WorkflowBuilder(processExecutor);
         builder.AddEdge(processExecutor, finalizeExecutor);
 
-        return builder.Build();
+        return await builder.BuildAsync<string>();
     }
 }
 
@@ -27,9 +27,9 @@ public static class SimpleWorkflow
 /// </summary>
 internal sealed class ProcessTextExecutor() : ReflectingExecutor<ProcessTextExecutor>("ProcessTextExecutor"), IMessageHandler<string, string>
 {
-    public async ValueTask<string> HandleAsync(string message, IWorkflowContext context)
+    public async ValueTask<string> HandleAsync(string message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
-        await Task.Delay(100); // Simulate some processing time
+        await Task.Delay(100, cancellationToken); // Simulate some processing time
         string result = $"Processed: {message.ToUpperInvariant()}";
         return result;
     }
@@ -40,13 +40,13 @@ internal sealed class ProcessTextExecutor() : ReflectingExecutor<ProcessTextExec
 /// </summary>
 internal sealed class FinalizeExecutor() : ReflectingExecutor<FinalizeExecutor>("FinalizeExecutor"), IMessageHandler<string, string>
 {
-    public async ValueTask<string> HandleAsync(string message, IWorkflowContext context)
+    public async ValueTask<string> HandleAsync(string message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
-        await Task.Delay(50); // Simulate finalization
+        await Task.Delay(50, cancellationToken); // Simulate finalization
         string result = $"[FINAL] {message} - Workflow Complete!";
 
         // Signal that the workflow is complete
-        await context.AddEventAsync(new ExecutorCompletedEvent("FinalizeExecutor", result)).ConfigureAwait(false);
+        await context.AddEventAsync(new ExecutorCompletedEvent("FinalizeExecutor", result), cancellationToken).ConfigureAwait(false);
 
         return result;
     }

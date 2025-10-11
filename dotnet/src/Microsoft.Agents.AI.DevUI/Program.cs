@@ -29,19 +29,25 @@ rootCommand.SetAction(async (parseResult, ct) =>
 
     try
     {
-        // Check if we should load sample entities
+        // Load sample entities in-memory (don't use file discovery for samples)
+        // This ensures entities are actually instantiated and can be executed
         object[]? entities = null;
+        string? actualEntitiesDir = entitiesDir;
+
         if (entitiesDir?.Contains("samples", StringComparison.OrdinalIgnoreCase) == true)
         {
-            Console.WriteLine("📦 Loading built-in sample entities...");
+            Console.WriteLine("📦 Loading built-in sample entities in-memory...");
             var weatherAgent = new Microsoft.Agents.AI.DevUI.Samples.WeatherAgent();
-            var simpleWorkflow = Microsoft.Agents.AI.DevUI.Samples.SimpleWorkflow.Create();
+            var simpleWorkflow = await Microsoft.Agents.AI.DevUI.Samples.SimpleWorkflow.CreateAsync();
             entities = [weatherAgent, simpleWorkflow];
+
+            // Don't use file discovery for samples since we're loading them in-memory
+            actualEntitiesDir = null;
         }
 
         await DevUI.ServeAsync(
             entities: entities,
-            entitiesDir: entitiesDir,
+            entitiesDir: actualEntitiesDir,
             port: port,
             host: host ?? "127.0.0.1",
             autoOpen: autoOpen);

@@ -64,8 +64,11 @@ public class EntityDiscoveryService
 
         _logger.LogInformation("Discovering entities from directory: {Dir} (resolved: {ResolvedPath})", entitiesDir, resolvedPath);
 
-        // Scan for .cs files and try to load types
-        var csFiles = Directory.GetFiles(resolvedPath, "*.cs", SearchOption.AllDirectories);
+        // Scan only one level deep (matching Python's behavior)
+        // This prevents discovering unintended files in nested subdirectories
+
+        // 1. Scan for .cs files in the top-level directory
+        var csFiles = Directory.GetFiles(resolvedPath, "*.cs", SearchOption.TopDirectoryOnly);
 
         foreach (var file in csFiles)
         {
@@ -130,6 +133,89 @@ public class EntityDiscoveryService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to process file: {File}", file);
+            }
+        }
+
+        // 2. Scan for subdirectories (folder-based entities, matching Python's structure)
+        var subDirectories = Directory.GetDirectories(resolvedPath);
+
+        foreach (var dir in subDirectories)
+        {
+            var dirName = Path.GetFileName(dir);
+
+            // Skip hidden directories and common build/config folders
+            if (dirName.StartsWith('.') || dirName == "__pycache__" || dirName == "bin" || dirName == "obj")
+            {
+                continue;
+            }
+
+            try
+            {
+                // Look for .cs files in the subdirectory (one level only)
+                var dirCsFiles = Directory.GetFiles(dir, "*.cs", SearchOption.TopDirectoryOnly);
+
+                foreach (var file in dirCsFiles)
+                {
+                    var content = await File.ReadAllTextAsync(file);
+
+                    // Look for agent patterns
+                    if (content.Contains(": AIAgent") || (content.Contains("public class") && content.Contains("Agent")))
+                    {
+                        var entityId = $"agent_{dirName.ToLowerInvariant()}";
+                        var entityInfo = new EntityInfo
+                        {
+                            Id = entityId,
+                            Name = Path.GetFileNameWithoutExtension(file),
+                            Type = "agent",
+                            Description = $"Agent from {dirName}/{Path.GetFileName(file)}",
+                            Framework = "agent-framework",
+                            Tools = new List<object>(),
+                            Metadata = new Dictionary<string, object>
+                            {
+                                { "module_path", file },
+                                { "source", "directory" },
+                                { "folder_name", dirName }
+                            }
+                        };
+
+                        entities.Add(entityInfo);
+                        _entityInfos[entityId] = entityInfo;
+                        _logger.LogInformation("Discovered agent in folder: {Id} from {Folder}", entityId, dirName);
+                    }
+
+                    // Look for workflow patterns
+                    if (content.Contains(": Workflow<") || content.Contains(": Workflow") ||
+                        (content.Contains("public class") && content.Contains("Workflow")))
+                    {
+                        var entityId = $"workflow_{dirName.ToLowerInvariant()}";
+                        var entityInfo = new EntityInfo
+                        {
+                            Id = entityId,
+                            Name = Path.GetFileNameWithoutExtension(file),
+                            Type = "workflow",
+                            Description = $"Workflow from {dirName}/{Path.GetFileName(file)}",
+                            Framework = "agent-framework",
+                            Tools = new List<object>(),
+                            Metadata = new Dictionary<string, object>
+                            {
+                                { "module_path", file },
+                                { "source", "directory" },
+                                { "folder_name", dirName }
+                            },
+                            Executors = new List<string>(),
+                            InputSchema = new Dictionary<string, object> { { "type", "string" } },
+                            InputTypeName = "String"
+                        };
+
+                        entities.Add(entityInfo);
+                        _entityInfos[entityId] = entityInfo;
+                        _logger.LogInformation("Discovered workflow in folder: {Id} from {Folder}", entityId, dirName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to process directory: {Dir}", dir);
             }
         }
 

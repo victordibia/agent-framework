@@ -18,19 +18,22 @@ A development server for the .NET Agent Framework that provides OpenAI-compatibl
 ### 1. Build and Run
 
 **Option A: From the DevUI directory (RECOMMENDED)**
+
 ```bash
 cd <repo-root>/dotnet/src/Microsoft.Agents.AI.DevUI
 dotnet build
-dotnet run -- --entities-dir samples --port 8080
+dotnet run -- --entities-dir samples --port 8071
 ```
 
 **Option B: From the repository root**
+
 ```bash
 dotnet build dotnet/src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj
 dotnet run --project dotnet/src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj -- --entities-dir dotnet/src/Microsoft.Agents.AI.DevUI/samples --port 8080
 ```
 
 **Option C: From the dotnet/ directory**
+
 ```bash
 cd <repo-root>/dotnet
 dotnet build src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj
@@ -87,6 +90,37 @@ curl -X POST http://localhost:8080/v1/responses \
 - `GET /v1/threads/{id}` - Get thread information
 - `DELETE /v1/threads/{id}` - Delete a thread
 - `GET /v1/threads/{id}/messages` - Get messages from a thread
+
+## Directory Structure
+
+DevUI discovers entities using **one-level scanning only** (matching Python's behavior) to prevent discovering unintended files. Two structures are supported:
+
+### Option 1: Flat Structure (Simple)
+
+```
+samples/
+├── WeatherAgent.cs         ← Discovered
+├── JokeAgent.cs            ← Discovered
+└── SimpleWorkflow.cs       ← Discovered
+```
+
+### Option 2: Folder-Based Structure (Organized)
+
+```
+entities/
+├── weather_agent/          ← Folder name becomes entity ID
+│   └── WeatherAgent.cs     ← Agent implementation
+├── joke_agent/
+│   └── JokeAgent.cs
+└── my_workflow/
+    └── MyWorkflow.cs
+```
+
+**Notes:**
+
+- Only scans **one level deep** - nested subdirectories are ignored
+- Skips hidden folders (`.git`), build folders (`bin`, `obj`), and `__pycache__`
+- Folder-based structure provides better organization for complex entities
 
 ## Creating Entities
 
@@ -240,22 +274,27 @@ Microsoft.Agents.AI.DevUI/
 
 ### Entity Discovery
 
-The server discovers entities in two ways:
+The server discovers entities in three ways:
 
-1. **Directory Scanning**: Scans `.cs` files for agent/workflow patterns
-2. **In-Memory Registration**: Register entities programmatically
+1. **Flat File Scanning**: Scans `.cs` files in the top-level directory for agent/workflow patterns
+2. **Folder-Based Scanning**: Scans subdirectories (one level) for organized entity structures
+3. **In-Memory Registration**: Register entities programmatically
+
+All directory scanning is **one-level only** to prevent discovering unintended files in nested directories.
 
 ### UI Serving
 
 The DevUI server automatically serves the React frontend from the `/` route:
 
 **Features**:
+
 - **Static File Serving**: All UI assets served from `ui/` directory
 - **SPA Fallback**: Non-API routes redirect to `index.html` for client-side routing
 - **API Preservation**: API routes (`/v1/*`, `/health`) remain accessible
 - **Auto-Detection**: Falls back to API-only mode if UI files are missing
 
 **UI Directory Structure**:
+
 ```
 Microsoft.Agents.AI.DevUI/
 ├── ui/
@@ -267,6 +306,7 @@ Microsoft.Agents.AI.DevUI/
 ```
 
 **Access Points**:
+
 - **UI**: `http://localhost:8080/` (React DevUI)
 - **API**: `http://localhost:8080/v1/entities` (OpenAI-compatible)
 - **Health**: `http://localhost:8080/health` (Server status)
@@ -276,11 +316,13 @@ Microsoft.Agents.AI.DevUI/
 The `ExecutionService` provides unified execution for both agents and workflows:
 
 **Agent Execution**:
+
 - Uses `AIAgent.RunAsync()` for real agent execution
 - Converts between OpenAI request format and framework `ChatMessage[]`
 - Maps `AgentRunResponse` to OpenAI-compatible format
 
 **Workflow Execution**:
+
 - Uses `InProcessExecution.RunAsync()` for real workflow execution
 - Supports `Workflow<string>` and `Workflow<ChatMessage[]>` input types
 - Maps workflow events to readable text responses (see Event Mapping table below)
@@ -289,21 +331,21 @@ The `ExecutionService` provides unified execution for both agents and workflows:
 
 Workflow events are converted to human-readable text for OpenAI-compatible responses:
 
-| Event Type | Icon | Description | Output Format | Example |
-|------------|------|-------------|---------------|---------|
-| `AgentRunResponseEvent` | 🤖 | Agent produces a response | `🤖 Agent Response: {response.Text}` | `🤖 Agent Response: The weather is sunny, 72°F` |
-| `AgentRunUpdateEvent` | 📝 | Agent produces streaming update | `📝 Agent Update: {update.Text}` | `📝 Agent Update: Processing weather data...` |
-| `WorkflowCompletedEvent` | ✅ | Workflow execution completed | `✅ Workflow completed successfully` | `✅ Workflow completed successfully` |
-| `WorkflowStartedEvent` | 🚀 | Workflow execution started | `🚀 Workflow started: {message}` | `🚀 Workflow started: Processing user input` |
-| `WorkflowErrorEvent` | ❌ | Workflow encountered an error | `❌ Workflow error: {exception.Message}` | `❌ Workflow error: Null reference exception` |
-| `WorkflowWarningEvent` | ⚠️ | Workflow warning occurred | `⚠️ Workflow warning: {message}` | `⚠️ Workflow warning: Connection timeout` |
-| `ExecutorCompletedEvent` | ⚙️ | Executor finished successfully | `⚙️ Executor '{executorId}' completed` | `⚙️ Executor 'weather-processor' completed` |
-| `ExecutorFailureEvent` | ❌ | Executor failed during execution | `❌ Executor '{executorId}' failed: {error}` | `❌ Executor 'data-fetcher' failed: API timeout` |
-| `ExecutorInvokedEvent` | 🔧 | Executor was called | `🔧 Executor '{executorId}' invoked: {message}` | `🔧 Executor 'validator' invoked: Checking input` |
-| `SuperStepStartedEvent` | 📊 | Workflow step started | `📊 Step {stepNumber} started` | `📊 Step 1 started` |
-| `SuperStepCompletedEvent` | 📈 | Workflow step completed | `📈 Step {stepNumber} completed` | `📈 Step 1 completed` |
-| `RequestInfoEvent` | 📨 | External request received | `📨 External request: {request}` | `📨 External request: User input required` |
-| **Other Events** | 📋 | Any unmapped event | `📋 {EventType}: {data}` | `📋 CustomEvent: Additional data` |
+| Event Type                | Icon | Description                      | Output Format                                   | Example                                           |
+| ------------------------- | ---- | -------------------------------- | ----------------------------------------------- | ------------------------------------------------- |
+| `AgentRunResponseEvent`   | 🤖   | Agent produces a response        | `🤖 Agent Response: {response.Text}`            | `🤖 Agent Response: The weather is sunny, 72°F`   |
+| `AgentRunUpdateEvent`     | 📝   | Agent produces streaming update  | `📝 Agent Update: {update.Text}`                | `📝 Agent Update: Processing weather data...`     |
+| `WorkflowCompletedEvent`  | ✅   | Workflow execution completed     | `✅ Workflow completed successfully`            | `✅ Workflow completed successfully`              |
+| `WorkflowStartedEvent`    | 🚀   | Workflow execution started       | `🚀 Workflow started: {message}`                | `🚀 Workflow started: Processing user input`      |
+| `WorkflowErrorEvent`      | ❌   | Workflow encountered an error    | `❌ Workflow error: {exception.Message}`        | `❌ Workflow error: Null reference exception`     |
+| `WorkflowWarningEvent`    | ⚠️   | Workflow warning occurred        | `⚠️ Workflow warning: {message}`                | `⚠️ Workflow warning: Connection timeout`         |
+| `ExecutorCompletedEvent`  | ⚙️   | Executor finished successfully   | `⚙️ Executor '{executorId}' completed`          | `⚙️ Executor 'weather-processor' completed`       |
+| `ExecutorFailureEvent`    | ❌   | Executor failed during execution | `❌ Executor '{executorId}' failed: {error}`    | `❌ Executor 'data-fetcher' failed: API timeout`  |
+| `ExecutorInvokedEvent`    | 🔧   | Executor was called              | `🔧 Executor '{executorId}' invoked: {message}` | `🔧 Executor 'validator' invoked: Checking input` |
+| `SuperStepStartedEvent`   | 📊   | Workflow step started            | `📊 Step {stepNumber} started`                  | `📊 Step 1 started`                               |
+| `SuperStepCompletedEvent` | 📈   | Workflow step completed          | `📈 Step {stepNumber} completed`                | `📈 Step 1 completed`                             |
+| `RequestInfoEvent`        | 📨   | External request received        | `📨 External request: {request}`                | `📨 External request: User input required`        |
+| **Other Events**          | 📋   | Any unmapped event               | `📋 {EventType}: {data}`                        | `📋 CustomEvent: Additional data`                 |
 
 **Note**: All events include their raw data in the `Data` property, which is converted to string representation in the output. Events without meaningful data show "No data" in the output.
 

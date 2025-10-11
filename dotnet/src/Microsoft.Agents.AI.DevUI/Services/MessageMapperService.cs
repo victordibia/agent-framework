@@ -1,4 +1,3 @@
-using Microsoft.Agents.AI.DevUI.Core;
 using Microsoft.Agents.AI.DevUI.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Agents.AI;
@@ -13,7 +12,7 @@ namespace Microsoft.Agents.AI.DevUI.Services;
 /// Maps Agent Framework messages/events to OpenAI Response format (NOT chat completion)
 /// Matches Python DevUI _mapper.py implementation exactly
 /// </summary>
-public class MessageMapperService : IMessageMapper
+public class MessageMapperService
 {
     private readonly ILogger<MessageMapperService> _logger;
     private readonly ConcurrentDictionary<string, ConversionContext> _contexts = new();
@@ -262,11 +261,11 @@ public class MessageMapperService : IMessageMapper
         return new ResponseEvents.ResponseWorkflowEventComplete
         {
             Type = "response.workflow_event.complete",
-            Data = new Dictionary<string, object?>
+            Data = new Dictionary<string, object>
             {
                 ["event_type"] = workflowEvent.GetType().Name,
-                ["data"] = workflowEvent.Data,
-                ["executor_id"] = executorId,
+                ["data"] = workflowEvent.Data ?? new object(),
+                ["executor_id"] = executorId ?? string.Empty,
                 ["timestamp"] = DateTime.UtcNow.ToString("O")
             },
             ExecutorId = executorId,

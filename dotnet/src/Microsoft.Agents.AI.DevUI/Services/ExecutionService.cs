@@ -50,7 +50,7 @@ public class ExecutionService
     /// <summary>
     /// Execute entity with streaming support
     /// </summary>
-    public async IAsyncEnumerable<object> ExecuteEntityStreamingAsync(string entityId, Microsoft.Agents.AI.DevUI.Models.Execution.DevUIExecutionRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<object> ExecuteEntityStreamingAsync(string entityId, Microsoft.Agents.AI.DevUI.Models.Execution.DevUIExecutionRequest request, AgentThread? thread = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var entityInfo = _discoveryService.GetEntityInfo(entityId);
         if (entityInfo == null)
@@ -62,7 +62,7 @@ public class ExecutionService
 
         if (entityInfo.Type == "agent")
         {
-            await foreach (var result in ExecuteAgentStreamingAsync(entityId, request, cancellationToken))
+            await foreach (var result in ExecuteAgentStreamingAsync(entityId, request, thread, cancellationToken))
             {
                 yield return result;
             }
@@ -80,7 +80,7 @@ public class ExecutionService
     /// <summary>
     /// Execute agent with streaming support
     /// </summary>
-    public async IAsyncEnumerable<object> ExecuteAgentStreamingAsync(string entityId, Microsoft.Agents.AI.DevUI.Models.Execution.DevUIExecutionRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<object> ExecuteAgentStreamingAsync(string entityId, Microsoft.Agents.AI.DevUI.Models.Execution.DevUIExecutionRequest request, AgentThread? thread = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // Get the actual agent instance
         var agent = _discoveryService.GetEntityObject(entityId) as AIAgent;
@@ -88,14 +88,11 @@ public class ExecutionService
         {
             var errorEvent = new
             {
-                id = Guid.NewGuid().ToString(),
-                @object = "error",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                type = "error",
                 error = new
                 {
                     message = $"Agent '{entityId}' not found or not accessible",
-                    type = "entity_not_found",
-                    code = "agent_not_found"
+                    type = "entity_not_found"
                 }
             };
             yield return errorEvent;
@@ -104,16 +101,24 @@ public class ExecutionService
 
         // Convert request to framework messages and start streaming
         var messages = ConvertRequestToMessages(request);
-        _logger.LogInformation("Executing agent {AgentId} with streaming, {MessageCount} messages", entityId, messages.Length);
+        _logger.LogInformation("Executing agent {AgentId} with streaming, {MessageCount} messages, thread: {HasThread}",
+            entityId, messages.Length, thread != null);
 
         // Initialize streaming result outside try-catch
         IAsyncEnumerable<AgentRunResponseUpdate>? streamingResult = null;
         Exception? startupError = null;
 
-        // Try to start streaming
+        // Try to start streaming (with or without thread)
         try
         {
-            streamingResult = agent.RunStreamingAsync(messages, cancellationToken: cancellationToken);
+            if (thread != null)
+            {
+                streamingResult = agent.RunStreamingAsync(messages, thread: thread, cancellationToken: cancellationToken);
+            }
+            else
+            {
+                streamingResult = agent.RunStreamingAsync(messages, cancellationToken: cancellationToken);
+            }
         }
         catch (Exception ex)
         {
@@ -387,7 +392,8 @@ public class ExecutionService
         // If no meaningful events, create a basic response
         if (responseBuilder.Count == 0)
         {
-            responseBuilder.Add($"🔄 Workflow '{workflowId}' completed with status: {run.Status}");
+            var status = await run.GetStatusAsync();
+            responseBuilder.Add($"🔄 Workflow '{workflowId}' completed with status: {status}");
         }
 
         var finalResponse = string.Join("\n", responseBuilder);

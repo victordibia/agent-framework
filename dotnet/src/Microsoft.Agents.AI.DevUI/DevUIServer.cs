@@ -69,7 +69,7 @@ public class DevUIServer
         builder.Services.AddSingleton<EntityDiscoveryService>();
         builder.Services.AddSingleton<MessageMapperService>();
         builder.Services.AddSingleton<ExecutionService>();
-        builder.Services.AddSingleton<ThreadService>();
+        builder.Services.AddSingleton<ConversationService>();
 
         var app = builder.Build();
 
