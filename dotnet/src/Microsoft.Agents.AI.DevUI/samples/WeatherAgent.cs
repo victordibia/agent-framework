@@ -3,12 +3,13 @@ using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
+using System.ComponentModel;
 
 namespace Microsoft.Agents.AI.DevUI.Samples;
 
 /// <summary>
-/// Weather agent powered by Azure OpenAI Chat Completion
-/// This agent provides weather information using AI
+/// Weather agent powered by Azure OpenAI Chat Completion with weather tools
+/// This agent provides weather information using AI with function calling
 ///
 /// Configuration:
 /// - AZURE_OPENAI_ENDPOINT: Your Azure OpenAI endpoint (required)
@@ -80,31 +81,33 @@ Or use Azure AD authentication (no API key needed):
                 ? new AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential())
                 : new AzureOpenAIClient(new Uri(endpoint), new Azure.AzureKeyCredential(apiKey));
 
-            // Create the agent using the CreateAIAgent extension method
+            // Create weather tools
+            var weatherTools = new List<AITool>
+            {
+                AIFunctionFactory.Create(WeatherTools.GetWeather),
+                AIFunctionFactory.Create(WeatherTools.GetForecast)
+            };
+
+            // Create the agent using the CreateAIAgent extension method with tools
             s_agent = azureClient
                 .GetChatClient(deploymentName)
                 .CreateAIAgent(
-                    instructions: @"You are a helpful weather assistant. When users ask about weather:
+                    instructions: @"You are a helpful weather assistant. You have access to weather tools:
+- get_weather: Gets current weather for a location
+- get_forecast: Gets multi-day forecast for a location
 
-1. If they provide a location, give detailed weather information including:
-   - Current conditions (temperature, sky conditions, wind)
-   - Short-term forecast
-   - Helpful recommendations based on the weather
+When users ask about weather:
+1. Use the appropriate tool to get weather information
+2. Present the information in a friendly, conversational way
+3. If asked about Atlantis, refuse and say it's a special place we don't check weather for!
+4. Be helpful and provide relevant recommendations based on the weather
 
-2. If no location is provided, politely ask for their location
+Always use the tools to get accurate weather data instead of making up information.",
+                    name: "Azure Weather Agent",
+                    description: "A helpful agent that provides weather information and forecasts using AI tools",
+                    tools: weatherTools);
 
-3. Be conversational and friendly
-
-Note: You don't have access to real-time weather data, so provide plausible weather information based on:
-- Typical patterns for that geographic location
-- Current season and time of year
-- General climate knowledge
-
-Always acknowledge that you're providing estimated information, not real-time data.",
-                    name: "Weather Agent",
-                    description: "Provides weather information for locations using Azure OpenAI");
-
-            Console.WriteLine($"✓ Weather Agent initialized with Azure OpenAI ({deploymentName})");
+            Console.WriteLine($"✓ Weather Agent initialized with Azure OpenAI ({deploymentName}) and {weatherTools.Count} tools");
             return s_agent;
         }
         catch (Exception ex)
@@ -113,5 +116,60 @@ Always acknowledge that you're providing estimated information, not real-time da
             Console.WriteLine($"⚠️  Failed to initialize Azure OpenAI Weather Agent: {ex.Message}");
             throw;
         }
+    }
+}
+
+/// <summary>
+/// Weather tool functions for the agent
+/// </summary>
+public static class WeatherTools
+{
+    /// <summary>
+    /// Get the weather for a given location
+    /// </summary>
+    [Description("Get the current weather for a given location")]
+    public static string GetWeather(
+        [Description("The location to get the weather for")] string location)
+    {
+        // Check for Atlantis (fun easter egg from Python version)
+        if (location.Equals("atlantis", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Atlantis is a special place, we must never ask about the weather there!!";
+        }
+
+        // Simulate weather data
+        var conditions = new[] { "sunny", "cloudy", "rainy", "stormy" };
+        var temperature = 53;
+        var condition = conditions[0]; // Always sunny for now
+
+        return $"The weather in {location} is {condition} with a high of {temperature}°C.";
+    }
+
+    /// <summary>
+    /// Get weather forecast for multiple days
+    /// </summary>
+    [Description("Get weather forecast for multiple days")]
+    public static string GetForecast(
+        [Description("The location to get the forecast for")] string location,
+        [Description("Number of days for forecast")] int days = 3)
+    {
+        // Check for Atlantis
+        if (location.Equals("atlantis", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Atlantis is a special place, we must never ask about the weather there!!";
+        }
+
+        // Simulate forecast data
+        var conditions = new[] { "sunny", "cloudy", "rainy", "stormy" };
+        var forecast = new List<string>();
+
+        for (int day = 1; day <= days; day++)
+        {
+            var condition = conditions[0]; // Always sunny for now
+            var temp = 53;
+            forecast.Add($"Day {day}: {condition}, {temp}°C");
+        }
+
+        return $"Weather forecast for {location}:\n" + string.Join("\n", forecast);
     }
 }

@@ -12,19 +12,31 @@ Successfully ported Python DevUI to .NET, implementing OpenAI Responses API form
 ## ✅ Completed Features
 
 ### 1. Core Infrastructure
-- **EntityDiscoveryService**: Discovers agents and workflows from in-memory and directory sources
+- **EntityDiscoveryService**: Discovers agents and workflows from in-memory (DI) and directory sources
 - **ExecutionService**: Unified service for executing agents and workflows
 - **MessageMapperService**: Converts Agent Framework events to OpenAI Responses API format
-- **ThreadService**: Manages conversation threads
-- **DevUIController**: REST API endpoints matching Python DevUI
+- **ConversationService**: Manages conversations using OpenAI Conversations API format (wraps AgentThread internally)
+- **DevUIController**: REST API endpoints with full Conversations API support
+- **DevUIHostedService**: Background service for discovering entities from DI container
+- **DI Extensions**: AddDevUI() and UseDevUI() for seamless ASP.NET Core integration
 
 ### 2. API Endpoints
+
+#### Entity Endpoints
 - `GET /v1/entities` - List all discovered entities
-- `GET /v1/entities/{id}/info` - Get entity details
+- `GET /v1/entities/{id}/info` - Get entity details (includes workflow_dump for visualization)
 - `POST /v1/responses` - Execute entity (streaming or non-streaming)
-- `POST /v1/threads` - Create conversation thread
-- `GET /v1/threads/{id}` - Get thread details
 - `GET /health` - Health check
+
+#### Conversations API (Full Implementation)
+- `POST /v1/conversations` - Create conversation
+- `GET /v1/conversations` - List conversations (with agent_id filter)
+- `GET /v1/conversations/{id}` - Get conversation details
+- `POST /v1/conversations/{id}` - Update conversation metadata
+- `DELETE /v1/conversations/{id}` - Delete conversation
+- `POST /v1/conversations/{id}/items` - Add conversation items
+- `GET /v1/conversations/{id}/items` - List conversation items
+- `GET /v1/conversations/{id}/items/{itemId}` - Get specific item
 
 ### 3. OpenAI Responses API Format
 Successfully implemented streaming events matching Python's format:
@@ -52,9 +64,11 @@ Successfully implemented streaming events matching Python's format:
 
 ### 5. Real Agent Framework Integration
 - ✅ Running actual `AIAgent` implementations (WeatherAgent sample)
-- ✅ Running actual `Workflow` implementations (SimpleWorkflow sample)
+- ✅ Running actual `Workflow` implementations (SpamDetectionWorkflow sample)
 - ✅ Proper streaming with `AgentRunResponseUpdate` events
 - ✅ Workflow event propagation via `Run.OutgoingEvents`
+- ✅ DI-based entity discovery (auto-discovers agents/workflows from service collection)
+- ✅ ASP.NET Core middleware integration (UseDevUI, MapControllers)
 
 ## 🔧 Key Implementation Details
 
@@ -106,43 +120,73 @@ Discovers entities from:
 ## 🗂️ File Structure
 
 ### Core Services
-- `Services/EntityDiscoveryService.cs` - Entity discovery
+- `Services/EntityDiscoveryService.cs` - Entity discovery (DI + file system)
 - `Services/ExecutionService.cs` - Agent/workflow execution
 - `Services/MessageMapperService.cs` - Event format conversion
-- `Services/ThreadService.cs` - Thread management
+- `Services/ConversationService.cs` - Conversation and thread management (wraps AgentThread)
+- `Services/DevUIHostedService.cs` - Background service for DI entity discovery
 
 ### Models
 - `Models/DiscoveryModels.cs` - Entity discovery DTOs
 - `Models/Execution/ExecutionModels.cs` - Execution request/response
 - `Models/Execution/ResponseEvents.cs` - Responses API event types
-- `Models/ThreadModels.cs` - Thread management DTOs
+- `Models/ConversationModels.cs` - Conversations API DTOs
 
 ### Controllers
-- `Controllers/DevUIController.cs` - REST API endpoints
+- `Controllers/DevUIController.cs` - REST API endpoints (entities + conversations)
+
+### DI Integration
+- `Extensions/DevUIServiceCollectionExtensions.cs` - AddDevUI() methods
+- `Extensions/DevUIApplicationBuilderExtensions.cs` - UseDevUI() and MapDevUI() methods
+- `DevUIOptions.cs` - Configuration options
 
 ### Entry Points
-- `Program.cs` - CLI entry point
+- `Program.cs` - CLI entry point (standalone mode)
 - `DevUI.cs` - Static helper for ServeAsync
 - `DevUIServer.cs` - Server builder and configuration
 
 ### Samples
 - `samples/WeatherAgent.cs` - Sample AIAgent implementation
-- `samples/SimpleWorkflow.cs` - Sample Workflow implementation
+- `samples/SpamDetectionWorkflow.cs` - Comprehensive workflow with 5 steps and branching logic
 
 ## 🚀 How to Run
 
+### Standalone Mode (CLI)
+
 ```bash
 # Start server with sample entities
-cd /Users/victordibia/projects/masdotnet/agent-framework/dotnet/src/Microsoft.Agents.AI.DevUI
+cd dotnet/src/Microsoft.Agents.AI.DevUI
 dotnet run -- --entities-dir samples --port 8081
 
 # Test entities endpoint
 curl http://127.0.0.1:8081/v1/entities | python3 -m json.tool
 
-# Test streaming execution (replace ENTITY_ID with actual ID)
+# Test streaming execution
 curl -X POST http://127.0.0.1:8081/v1/responses \
   -H "Content-Type: application/json" \
-  -d '{"model": "agent-framework", "input": "What is the weather?", "stream": true, "extra_body": {"entity_id": "ENTITY_ID"}}'
+  -d '{"model": "agent-framework", "messages": [{"role": "user", "content": "What is the weather?"}], "stream": true, "extra_body": {"entity_id": "agent_weatheragent"}}'
+```
+
+### Integrated Mode (ASP.NET Core)
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Register agents
+builder.Services.AddSingleton<AIAgent, WeatherAgent>();
+
+// Add DevUI
+builder.Services.AddDevUI(options =>
+{
+    options.Port = 8071;
+    options.BasePath = "/devui";
+    options.DiscoverFromDI = true;
+});
+
+var app = builder.Build();
+app.UseDevUI();
+app.MapControllers();
+app.Run();
 ```
 
 ## 📝 Known Differences from Python
@@ -158,31 +202,37 @@ curl -X POST http://127.0.0.1:8081/v1/responses \
 
 ## 🔄 Recent Changes
 
-### Session Context (Latest)
-1. ✅ Fixed workflow streaming to use Responses API format
-2. ✅ Added `ConvertWorkflowEvent` method to MessageMapperService
-3. ✅ Replaced old `chat.completion.chunk` format in workflow streaming
-4. ✅ Added `Microsoft.Agents.AI` project reference
-5. ✅ Ensured all streaming uses SSE format with proper `[DONE]` termination
+### Current Implementation (Latest)
+1. ✅ **DI Integration Complete**: Full ASP.NET Core dependency injection support
+   - AddDevUI() extension methods (configuration + programmatic)
+   - UseDevUI() middleware integration
+   - DevUIHostedService for auto-discovery from DI container
+2. ✅ **Conversations API Complete**: Full OpenAI Conversations API implementation
+   - Replaced ThreadService with ConversationService
+   - Complete CRUD operations for conversations and items
+   - AgentThread wrapped internally for compatibility
+3. ✅ **Updated Samples**:
+   - Removed SimpleWorkflow.cs (deleted)
+   - Added SpamDetectionWorkflow.cs (comprehensive 5-step workflow)
+4. ✅ **Workflow Visualization**: workflow_dump serialization for frontend
+5. ✅ **Responses API Format**: All streaming events use proper SSE format
 
-### Previous Session
+### Previous Sessions
 1. ✅ Built ResponseEvents types matching Python
-2. ✅ Integrated MessageMapperService into ExecutionService
-3. ✅ Fixed JSON deserialization with JsonPropertyName attributes
-4. ✅ Supported both `input` and `messages` request formats
-5. ✅ Fixed namespace conflicts
-6. ✅ Fixed Unicode/emoji handling
+2. ✅ Fixed workflow streaming to use Responses API format
+3. ✅ Supported both `input` and `messages` request formats
+4. ✅ Fixed Unicode/emoji handling in streaming
 
 ## 🎯 Next Steps
 
-1. **Test Workflow Streaming**: Run SimpleWorkflow and verify events match Python format
-2. **Frontend Integration**: Test with DevUI frontend to ensure compatibility
-3. **Cleanup**: Remove unused legacy files (Test.cs, SessionService, etc.)
-4. **Documentation**: Add API documentation and usage examples
-5. **Performance**: Optimize streaming for production use
+1. **Frontend Integration**: Test with DevUI frontend to ensure full compatibility
+2. **Testing**: Add unit and integration tests for all services
+3. **Documentation**: Add XML documentation comments throughout
+4. **Performance**: Optimize streaming and conversation storage for production
+5. **UI Build Integration**: Automate UI build as part of dotnet build process
 
-## 📚 Reference Files
+## 📚 Reference
 
-- Python Reference: `/Users/victordibia/projects/hax/fork/agent-framework/python/packages/devui`
-- Python Test Data: `/Users/victordibia/projects/hax/fork/agent-framework/python/packages/devui/tests/captured_messages/entities_stream_events.json`
-- .NET Implementation: `/Users/victordibia/projects/masdotnet/agent-framework/dotnet/src/Microsoft.Agents.AI.DevUI`
+- .NET Implementation: `dotnet/src/Microsoft.Agents.AI.DevUI/`
+- Python Reference: Python DevUI package (for API format compatibility)
+- Integration Examples: `Examples/INTEGRATION_EXAMPLE.md`

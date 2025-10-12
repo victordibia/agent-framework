@@ -28,6 +28,14 @@ public class MessageMapperService
         public string ItemId { get; set; } = $"msg_{Guid.NewGuid().ToString("N")[..8]}";
         public int ContentIndex { get; set; }
         public int OutputIndex { get; set; }
+        public Dictionary<string, FunctionCallInfo> ActiveFunctionCalls { get; set; } = new();
+    }
+
+    private class FunctionCallInfo
+    {
+        public required string ItemId { get; set; }
+        public required string Name { get; set; }
+        public required List<string> ArgumentsChunks { get; set; }
     }
 
     private ConversionContext GetOrCreateContext(string sessionId)
@@ -145,32 +153,104 @@ public class MessageMapperService
     }
 
     /// <summary>
-    /// Map FunctionCallContent to response.function_call_arguments.delta events
+    /// Map FunctionCallContent to OpenAI events following Responses API spec
+    ///
+    /// Agent Framework emits FunctionCallContent in two patterns:
+    /// 1. First event: call_id + name + empty/no arguments
+    /// 2. Subsequent events: empty call_id/name + argument chunks
+    ///
+    /// We emit:
+    /// 1. response.output_item.added (with full metadata) for the first event
+    /// 2. response.function_call_arguments.delta (referencing item_id) for chunks
     /// </summary>
     private List<object> MapFunctionCallContent(FunctionCallContent content, ConversionContext context)
     {
         var events = new List<object>();
 
-        // Serialize arguments to JSON
-        var argsJson = content.Arguments != null
-            ? JsonSerializer.Serialize(content.Arguments)
-            : "{}";
-
-        // Chunk JSON string for streaming (like Python does)
-        foreach (var chunk in ChunkJsonString(argsJson))
+        // CASE 1: New function call (has call_id and name)
+        // This is the first event that establishes the function call
+        if (!string.IsNullOrEmpty(content.CallId) && !string.IsNullOrEmpty(content.Name))
         {
-            events.Add(new
+            // Track this function call for later argument deltas
+            if (!context.ActiveFunctionCalls.ContainsKey(content.CallId))
             {
-                type = "response.function_call_arguments.delta",
-                delta = chunk,
-                item_id = context.ItemId,
-                output_index = context.OutputIndex,
-                sequence_number = NextSequence(context),
-                call_id = content.CallId
-            });
+                context.ActiveFunctionCalls[content.CallId] = new FunctionCallInfo
+                {
+                    ItemId = content.CallId,
+                    Name = content.Name,
+                    ArgumentsChunks = new List<string>()
+                };
+
+                // Emit response.output_item.added event per OpenAI spec
+                events.Add(new
+                {
+                    type = "response.output_item.added",
+                    item = new
+                    {
+                        id = content.CallId,
+                        call_id = content.CallId,
+                        name = content.Name,
+                        arguments = "",  // Empty initially, will be filled by deltas
+                        type = "function_call",
+                        status = "in_progress"
+                    },
+                    output_index = context.OutputIndex,
+                    sequence_number = NextSequence(context)
+                });
+            }
+        }
+
+        // CASE 2: Argument deltas (content has arguments)
+        if (content.Arguments != null)
+        {
+            // Find the active function call for these arguments
+            var activeCall = GetActiveFunctionCall(content, context);
+
+            if (activeCall != null)
+            {
+                // Serialize arguments to JSON
+                var argsJson = JsonSerializer.Serialize(content.Arguments);
+
+                // Chunk JSON string for streaming (like Python does)
+                foreach (var chunk in ChunkJsonString(argsJson))
+                {
+                    events.Add(new
+                    {
+                        type = "response.function_call_arguments.delta",
+                        delta = chunk,
+                        item_id = activeCall.ItemId,
+                        output_index = context.OutputIndex,
+                        sequence_number = NextSequence(context)
+                    });
+
+                    // Track chunk for debugging
+                    activeCall.ArgumentsChunks.Add(chunk);
+                }
+            }
         }
 
         return events;
+    }
+
+    /// <summary>
+    /// Find the active function call for this content
+    /// Uses call_id if present, otherwise falls back to most recent call
+    /// </summary>
+    private FunctionCallInfo? GetActiveFunctionCall(FunctionCallContent content, ConversionContext context)
+    {
+        // If content has call_id, use it to find the exact call
+        if (!string.IsNullOrEmpty(content.CallId) && context.ActiveFunctionCalls.TryGetValue(content.CallId, out var call))
+        {
+            return call;
+        }
+
+        // Otherwise, use the most recent call (last one added)
+        if (context.ActiveFunctionCalls.Count > 0)
+        {
+            return context.ActiveFunctionCalls.Values.Last();
+        }
+
+        return null;
     }
 
     /// <summary>

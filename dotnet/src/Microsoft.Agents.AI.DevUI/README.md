@@ -6,39 +6,46 @@ A development server for the .NET Agent Framework that provides OpenAI-compatibl
 
 ## Features
 
-- 🔌 **OpenAI-Compatible API**: Uses official OpenAI .NET library types for perfect compatibility
+- 🔌 **OpenAI-Compatible API**: Implements OpenAI Responses API and Conversations API formats
 - 🤖 **Agent & Workflow Support**: Discover and execute both agents and workflows
-- 📡 **Streaming Support**: Full streaming execution with Server-Sent Events
-- 🔍 **Entity Discovery**: Automatic discovery from directories or in-memory registration
-- 🧵 **Thread Management**: Complete thread lifecycle management
-- 🚀 **CLI Interface**: Simple command-line interface for quick startup
+- 📡 **Streaming Support**: Full streaming execution with Server-Sent Events (SSE)
+- 🔍 **Entity Discovery**: Automatic discovery from DI container, directories, or in-memory registration
+- 💬 **Conversations API**: Complete OpenAI Conversations API implementation with items support
+- 🔧 **DI Integration**: Seamless ASP.NET Core integration with AddDevUI() and UseDevUI()
+- 🚀 **Dual Modes**: Run standalone (CLI) or integrated into existing ASP.NET Core apps
 
 ## Quick Start
 
-### 1. Build and Run
-
-**Option A: From the DevUI directory (RECOMMENDED)**
+### Standalone Mode (CLI)
 
 ```bash
-cd <repo-root>/dotnet/src/Microsoft.Agents.AI.DevUI
+cd dotnet/src/Microsoft.Agents.AI.DevUI
 dotnet build
 dotnet run -- --entities-dir samples --port 8071
 ```
 
-**Option B: From the repository root**
+Access DevUI at: `http://localhost:8071/`
 
-```bash
-dotnet build dotnet/src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj
-dotnet run --project dotnet/src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj -- --entities-dir dotnet/src/Microsoft.Agents.AI.DevUI/samples --port 8080
+### Integrated Mode (ASP.NET Core)
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Register your agents
+builder.Services.AddSingleton<AIAgent, WeatherAgent>();
+
+// Add DevUI
+builder.Services.AddDevUI();
+
+var app = builder.Build();
+app.UseDevUI();
+app.MapControllers();
+app.Run();
 ```
 
-**Option C: From the dotnet/ directory**
+Access DevUI at: `http://localhost:8080/devui`
 
-```bash
-cd <repo-root>/dotnet
-dotnet build src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj
-dotnet run --project src/Microsoft.Agents.AI.DevUI/Microsoft.Agents.AI.DevUI.csproj -- --entities-dir src/Microsoft.Agents.AI.DevUI/samples --port 8080
-```
+See [INTEGRATION_EXAMPLE.md](Examples/INTEGRATION_EXAMPLE.md) for more integration patterns.
 
 ### 2. Test the API
 
@@ -83,13 +90,16 @@ curl -X POST http://localhost:8080/v1/responses \
 - `GET /v1/entities/{id}/info` - Get detailed entity information
 - `POST /v1/responses` - Execute entity (supports streaming)
 
-### Thread Management
+### Conversations API
 
-- `POST /v1/threads` - Create a new thread for an agent
-- `GET /v1/threads?agent_id={id}` - List threads for an agent
-- `GET /v1/threads/{id}` - Get thread information
-- `DELETE /v1/threads/{id}` - Delete a thread
-- `GET /v1/threads/{id}/messages` - Get messages from a thread
+- `POST /v1/conversations` - Create a new conversation
+- `GET /v1/conversations` - List conversations (with agent_id filter)
+- `GET /v1/conversations/{id}` - Get conversation details
+- `POST /v1/conversations/{id}` - Update conversation metadata
+- `DELETE /v1/conversations/{id}` - Delete a conversation
+- `POST /v1/conversations/{id}/items` - Add conversation items
+- `GET /v1/conversations/{id}/items` - List conversation items
+- `GET /v1/conversations/{id}/items/{itemId}` - Get specific item
 
 ## Directory Structure
 
@@ -99,9 +109,8 @@ DevUI discovers entities using **one-level scanning only** (matching Python's be
 
 ```
 samples/
-├── WeatherAgent.cs         ← Discovered
-├── JokeAgent.cs            ← Discovered
-└── SimpleWorkflow.cs       ← Discovered
+├── WeatherAgent.cs              ← Discovered
+├── SpamDetectionWorkflow.cs     ← Discovered
 ```
 
 ### Option 2: Folder-Based Structure (Organized)
@@ -177,44 +186,58 @@ public class WeatherAgent : AIAgent
 
 ### Workflow Example
 
+See [samples/SpamDetectionWorkflow.cs](samples/SpamDetectionWorkflow.cs) for a comprehensive workflow example with:
+- 5-step processing pipeline
+- Multiple executors with branching logic
+- Realistic processing delays
+- Email spam detection and handling
+
+## Integration Examples
+
+### Basic DI Integration
+
 ```csharp
-using Microsoft.Agents.Workflows;
+// Register agents in DI
+builder.Services.AddSingleton<AIAgent, WeatherAgent>();
 
-namespace Microsoft.Agents.AI.DevUI.Samples;
+// Add DevUI with default config
+builder.Services.AddDevUI();
 
-public class SimpleWorkflow : Workflow<string>
+var app = builder.Build();
+app.UseDevUI();
+app.MapControllers();
+```
+
+### Configuration from appsettings.json
+
+```csharp
+builder.Services.AddDevUI(builder.Configuration.GetSection("DevUI"));
+```
+
+```json
 {
-    public SimpleWorkflow() : base("start_executor")
-    {
-    }
-
-    public string ProcessInput(string input)
-    {
-        return $"Processed: {input.ToUpperInvariant()}";
-    }
+  "DevUI": {
+    "Port": 8071,
+    "BasePath": "/devui",
+    "DiscoverFromDI": true,
+    "AutoOpen": true
+  }
 }
 ```
 
-## Programmatic Usage
+### Programmatic Configuration
 
 ```csharp
-using Microsoft.Agents.AI.DevUI;
-
-// Simple usage
-await DevUI.ServeAsync(
-    entitiesDir: "./samples",
-    port: 8080,
-    autoOpen: true);
-
-// Advanced usage
-var server = DevUI.CreateServer(
-    entitiesDir: "./my-entities",
-    port: 3000,
-    host: "0.0.0.0");
-
-server.RegisterEntities(new WeatherAgent(), new SimpleWorkflow());
-await server.RunAsync();
+builder.Services.AddDevUI(options =>
+{
+    options.Port = 8071;
+    options.BasePath = "/debug";
+    options.EntitiesDir = "./agents";
+    options.CorsOrigins = new List<string> { "http://localhost:3000" };
+});
 ```
+
+See [Examples/INTEGRATION_EXAMPLE.md](Examples/INTEGRATION_EXAMPLE.md) for complete integration patterns.
 
 ## CLI Options
 
@@ -264,21 +287,31 @@ This package is part of the Microsoft .NET Agent Framework and integrates with:
 ```
 Microsoft.Agents.AI.DevUI/
 ├── Controllers/           # API controllers
-├── Services/             # Core services (discovery, execution)
-├── Models/              # API models and types
+├── Services/             # Core services (discovery, execution, conversations)
+├── Models/              # API models and DTOs
+├── Extensions/          # DI extension methods (AddDevUI, UseDevUI)
+├── Examples/            # Integration examples and guides
 ├── samples/             # Sample agents and workflows
-├── DevUI.cs            # Main API entry point
-├── DevUIServer.cs      # Server implementation
-└── Program.cs          # CLI interface
+├── DevUI.cs            # Static helper for standalone mode
+├── DevUIServer.cs      # Server builder
+├── DevUIOptions.cs     # Configuration options
+└── Program.cs          # CLI entry point
 ```
 
 ### Entity Discovery
 
 The server discovers entities in three ways:
 
-1. **Flat File Scanning**: Scans `.cs` files in the top-level directory for agent/workflow patterns
-2. **Folder-Based Scanning**: Scans subdirectories (one level) for organized entity structures
-3. **In-Memory Registration**: Register entities programmatically
+1. **DI Container**: Automatically discovers agents/workflows registered in the service collection (enabled by default)
+2. **Directory Scanning**: Scans `.cs` files for agent/workflow patterns (flat or folder-based structure)
+3. **In-Memory Registration**: Register entities programmatically in standalone mode
+
+**DI Discovery Example:**
+```csharp
+// Agents registered in DI are automatically discovered
+builder.Services.AddSingleton<AIAgent, WeatherAgent>();
+builder.Services.AddDevUI(options => options.DiscoverFromDI = true);
+```
 
 All directory scanning is **one-level only** to prevent discovering unintended files in nested directories.
 
@@ -366,24 +399,25 @@ dotnet build
 
 ## Current Status
 
-- ✅ **Complete API**: All endpoints implemented and tested
-- ✅ **Framework Integration**: Uses real agent framework types
-- ✅ **Thread Management**: Full lifecycle support
-- ✅ **Entity Discovery**: File-based and in-memory
-- ✅ **Streaming Support**: Real-time execution
+- ✅ **Complete API**: All endpoints implemented (entities + full conversations API)
+- ✅ **DI Integration**: Full ASP.NET Core dependency injection support
+- ✅ **Framework Integration**: Uses real agent framework types and execution
+- ✅ **Conversations API**: Complete OpenAI Conversations API with items
+- ✅ **Entity Discovery**: DI container, file-based, and in-memory
+- ✅ **Streaming Support**: SSE streaming with OpenAI Responses API format
 - ✅ **Real Agent Execution**: Executes actual agents using Agent Framework
 - ✅ **Real Workflow Execution**: Executes actual workflows with event mapping
-- ✅ **Unified Execution Service**: Single service handles both agents and workflows
-- ✅ **UI Serving**: Serves React DevUI from `/` route with SPA fallback support
+- ✅ **UI Serving**: Serves React DevUI from base path with SPA fallback support
+- ✅ **Dual Modes**: Standalone CLI or integrated into ASP.NET Core apps
 
 ## Future Enhancements
 
+- [ ] **Testing**: Unit and integration tests for all services
 - [ ] **Dynamic Assembly Loading**: Runtime compilation for entity discovery
-- [ ] **Enhanced Streaming**: Restore streaming support (temporarily simplified)
-- [ ] **Authentication/Authorization**: Security layer
+- [ ] **Authentication/Authorization**: Security layer for production use
 - [ ] **Hot Reload**: Watch file changes for entities
-- [ ] **Advanced Workflow Types**: Support for more complex workflow input types
-- [ ] **UI Build Integration**: Integrate frontend build process with .NET build
+- [ ] **Persistent Storage**: Database backend for conversations
+- [ ] **UI Build Integration**: Automate frontend build with dotnet build
 
 ## Troubleshooting
 

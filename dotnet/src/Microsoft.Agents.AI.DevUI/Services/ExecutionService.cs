@@ -15,12 +15,14 @@ public class ExecutionService
 {
     private readonly EntityDiscoveryService _discoveryService;
     private readonly MessageMapperService _mapperService;
+    private readonly ConversationService _conversationService;
     private readonly ILogger<ExecutionService> _logger;
 
-    public ExecutionService(EntityDiscoveryService discoveryService, MessageMapperService mapperService, ILogger<ExecutionService> logger)
+    public ExecutionService(EntityDiscoveryService discoveryService, MessageMapperService mapperService, ConversationService conversationService, ILogger<ExecutionService> logger)
     {
         _discoveryService = discoveryService;
         _mapperService = mapperService;
+        _conversationService = conversationService;
         _logger = logger;
     }
 
@@ -99,10 +101,14 @@ public class ExecutionService
             yield break;
         }
 
-        // Convert request to framework messages and start streaming
-        var messages = ConvertRequestToMessages(request);
-        _logger.LogInformation("Executing agent {AgentId} with streaming, {MessageCount} messages, thread: {HasThread}",
-            entityId, messages.Length, thread != null);
+        // Check if there's a conversation_id in the request
+        var conversationId = request.GetConversationId();
+        if (!string.IsNullOrEmpty(conversationId) && thread == null)
+        {
+            // Get or create thread from conversation service
+            thread = _conversationService.GetOrCreateThread(conversationId, agent);
+            _logger.LogInformation("Using conversation {ConversationId} for agent {AgentId}", conversationId, entityId);
+        }
 
         // Initialize streaming result outside try-catch
         IAsyncEnumerable<AgentRunResponseUpdate>? streamingResult = null;
@@ -113,10 +119,19 @@ public class ExecutionService
         {
             if (thread != null)
             {
-                streamingResult = agent.RunStreamingAsync(messages, thread: thread, cancellationToken: cancellationToken);
+                // When using a thread, pass only the new user input as a string
+                // The thread already contains the conversation history
+                var userInput = request.GetLastMessageContent();
+                _logger.LogInformation("Executing agent {AgentId} with streaming, input: {Input}, thread: true",
+                    entityId, userInput);
+                streamingResult = agent.RunStreamingAsync(userInput, thread: thread, cancellationToken: cancellationToken);
             }
             else
             {
+                // Without a thread, pass the full message history
+                var messages = ConvertRequestToMessages(request);
+                _logger.LogInformation("Executing agent {AgentId} with streaming, {MessageCount} messages, thread: false",
+                    entityId, messages.Length);
                 streamingResult = agent.RunStreamingAsync(messages, cancellationToken: cancellationToken);
             }
         }
@@ -146,12 +161,26 @@ public class ExecutionService
         }
 
         var sessionId = Guid.NewGuid().ToString();  // Same session for all events
+        var responseTexts = new List<string>();  // Collect response for conversation history
+
+        // Add user message to conversation if we have a conversation_id
+        if (!string.IsNullOrEmpty(conversationId))
+        {
+            var userInput = request.GetLastMessageContent();
+            _conversationService.AddMessage(conversationId, "user", userInput);
+        }
 
         // Process streaming results and convert to OpenAI Responses API events
         await foreach (var update in streamingResult!.WithCancellation(cancellationToken))
         {
             if (cancellationToken.IsCancellationRequested)
                 yield break;
+
+            // Collect response text for conversation history
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                responseTexts.Add(update.Text);
+            }
 
             IEnumerable<object>? events = null;
             Exception? conversionError = null;
@@ -185,6 +214,13 @@ public class ExecutionService
                     yield return evt;
                 }
             }
+        }
+
+        // Add assistant response to conversation if we have a conversation_id
+        if (!string.IsNullOrEmpty(conversationId) && responseTexts.Count > 0)
+        {
+            var fullResponse = string.Join("", responseTexts);
+            _conversationService.AddMessage(conversationId, "assistant", fullResponse);
         }
 
         // Stream completes - controller will send [DONE]

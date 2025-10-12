@@ -12,6 +12,7 @@ public class ConversationService
 {
     private readonly ConcurrentDictionary<string, Conversation> _conversations = new();
     private readonly ConcurrentDictionary<string, List<ConversationItem>> _items = new();
+    private readonly ConcurrentDictionary<string, AgentThread> _threads = new();
     private readonly ILogger<ConversationService> _logger;
 
     public ConversationService(ILogger<ConversationService> logger)
@@ -21,6 +22,7 @@ public class ConversationService
 
     /// <summary>
     /// Create a new conversation
+    /// AgentThread will be created lazily when first needed by GetOrCreateThread()
     /// </summary>
     public Conversation CreateConversation(Dictionary<string, string>? metadata = null)
     {
@@ -52,13 +54,33 @@ public class ConversationService
 
     /// <summary>
     /// Get underlying AgentThread for a conversation
-    /// Note: Threads are created on-demand by agents, not stored here
+    /// This is critical for multi-turn conversations with function calling
     /// </summary>
     public AgentThread? GetThread(string conversationId)
     {
-        // For now, conversations don't store threads directly
-        // Agents will create their own threads as needed
-        return null;
+        return _threads.TryGetValue(conversationId, out var thread) ? thread : null;
+    }
+
+    /// <summary>
+    /// Get or create an AgentThread for a conversation using the provided agent
+    /// Threads are created lazily because they require an agent instance
+    /// </summary>
+    public AgentThread GetOrCreateThread(string conversationId, AIAgent agent)
+    {
+        if (!_conversations.ContainsKey(conversationId))
+        {
+            throw new InvalidOperationException($"Conversation '{conversationId}' not found");
+        }
+
+        // Get existing thread or create new one
+        if (!_threads.TryGetValue(conversationId, out var thread))
+        {
+            thread = agent.GetNewThread();
+            _threads[conversationId] = thread;
+            _logger.LogInformation("Created new AgentThread for conversation {ConversationId}", conversationId);
+        }
+
+        return thread;
     }
 
     /// <summary>
@@ -79,7 +101,7 @@ public class ConversationService
     }
 
     /// <summary>
-    /// Delete a conversation
+    /// Delete a conversation and its AgentThread
     /// </summary>
     public ConversationDeletedResource DeleteConversation(string conversationId)
     {
@@ -89,8 +111,9 @@ public class ConversationService
         }
 
         _items.TryRemove(conversationId, out _);
+        _threads.TryRemove(conversationId, out _);
 
-        _logger.LogInformation("Deleted conversation {ConversationId}", conversationId);
+        _logger.LogInformation("Deleted conversation {ConversationId} and its AgentThread", conversationId);
 
         return new ConversationDeletedResource
         {
@@ -188,16 +211,27 @@ public class ConversationService
 
     /// <summary>
     /// Get items from a conversation
+    /// Note: .NET AgentThread doesn't expose message history like Python does,
+    /// so we cache items manually as they're added
     /// </summary>
     public ConversationItemListResponse GetItems(string conversationId, int limit = 100, string? after = null, string order = "desc")
     {
         if (!_items.TryGetValue(conversationId, out var items))
         {
-            return new ConversationItemListResponse
+            // Initialize empty list if conversation exists but has no items yet
+            if (_conversations.ContainsKey(conversationId))
             {
-                Object = "list",
-                Data = new List<ConversationItem>()
-            };
+                items = new List<ConversationItem>();
+                _items[conversationId] = items;
+            }
+            else
+            {
+                return new ConversationItemListResponse
+                {
+                    Object = "list",
+                    Data = new List<ConversationItem>()
+                };
+            }
         }
 
         var itemsList = items.AsEnumerable();
@@ -245,5 +279,38 @@ public class ConversationService
         }
 
         return items.FirstOrDefault(i => i.Id == itemId);
+    }
+
+    /// <summary>
+    /// Add a simple text message to a conversation
+    /// Used internally by ExecutionService to populate conversation history
+    /// </summary>
+    public void AddMessage(string conversationId, string role, string text)
+    {
+        if (!_conversations.ContainsKey(conversationId))
+        {
+            return;
+        }
+
+        if (!_items.TryGetValue(conversationId, out var items))
+        {
+            items = new List<ConversationItem>();
+            _items[conversationId] = items;
+        }
+
+        var item = new ConversationItem
+        {
+            Id = $"item_{Guid.NewGuid():N}",
+            Object = "conversation.item",
+            Type = "message",
+            Role = role,
+            CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            Content = new List<ConversationContent>
+            {
+                new ConversationContent { Type = "text", Text = text }
+            }
+        };
+
+        items.Add(item);
     }
 }

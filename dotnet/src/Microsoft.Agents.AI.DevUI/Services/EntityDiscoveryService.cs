@@ -262,12 +262,20 @@ public class EntityDiscoveryService
             if (!string.IsNullOrEmpty(agent.Name))
                 entityInfo.Metadata["agent_name"] = agent.Name;
         }
-        else if (entityInfo.Type == "workflow")
+        else if (entity is Workflow workflow)
         {
+            // Extract workflow name and description
+            entityInfo.Name = workflow.Name ?? type.Name;
+            entityInfo.Description = workflow.Description ?? entityInfo.Description;
+
             // Add workflow-specific fields
             entityInfo.Executors = new List<string>();
             entityInfo.InputSchema = new Dictionary<string, object> { { "type", "string" } };
             entityInfo.InputTypeName = "String";
+
+            // Add workflow-specific metadata
+            if (!string.IsNullOrEmpty(workflow.Name))
+                entityInfo.Metadata["workflow_name"] = workflow.Name;
         }
 
         return entityInfo;

@@ -38,8 +38,8 @@ rootCommand.SetAction(async (parseResult, ct) =>
         {
             Console.WriteLine("📦 Loading built-in sample entities in-memory...");
             var weatherAgent = new Microsoft.Agents.AI.DevUI.Samples.WeatherAgent();
-            var simpleWorkflow = await Microsoft.Agents.AI.DevUI.Samples.SimpleWorkflow.CreateAsync();
-            entities = [weatherAgent, simpleWorkflow];
+            var spamWorkflow = await Microsoft.Agents.AI.DevUI.Samples.SpamDetectionWorkflow.CreateAsync();
+            entities = [weatherAgent, spamWorkflow];
 
             // Don't use file discovery for samples since we're loading them in-memory
             actualEntitiesDir = null;
