@@ -290,8 +290,8 @@ public class ExecutionService
         var inputContent = request.GetLastMessageContent();
         _logger.LogInformation("Executing workflow {WorkflowId} with streaming input: {Input}", entityId, inputContent);
 
-        // Start workflow execution and capture events
-        Run? run = null;
+        // Start workflow execution with streaming support
+        StreamingRun? streamingRun = null;
         Exception? startupError = null;
 
         try
@@ -299,13 +299,13 @@ public class ExecutionService
             // For workflows that accept string input
             if (workflow is Workflow<string> stringWorkflow)
             {
-                run = await InProcessExecution.RunAsync(stringWorkflow, inputContent, runId: null, cancellationToken);
+                streamingRun = await InProcessExecution.StreamAsync(stringWorkflow, inputContent, runId: null, cancellationToken);
             }
             // For workflows that accept ChatMessage[] input
             else if (workflow is Workflow<ChatMessage[]> messageWorkflow)
             {
                 var messages = ConvertRequestToMessages(request);
-                run = await InProcessExecution.RunAsync(messageWorkflow, messages, runId: null, cancellationToken);
+                streamingRun = await InProcessExecution.StreamAsync(messageWorkflow, messages, runId: null, cancellationToken);
             }
             else
             {
@@ -337,13 +337,13 @@ public class ExecutionService
             yield break;
         }
 
-        // Process workflow events and convert to Responses API format
+        // Process workflow events in real-time using streaming
         var sessionId = Guid.NewGuid().ToString();
         var sequenceNumber = 0;
 
-        if (run != null)
+        if (streamingRun != null)
         {
-            foreach (var evt in run.OutgoingEvents)
+            await foreach (var evt in streamingRun.WatchStreamAsync(cancellationToken))
             {
                 if (cancellationToken.IsCancellationRequested)
                     yield break;
@@ -351,9 +351,6 @@ public class ExecutionService
                 // Convert workflow event to response.workflow_event.complete format
                 var workflowEvent = _mapperService.ConvertWorkflowEvent(evt, sessionId, ++sequenceNumber);
                 yield return workflowEvent;
-
-                // Add a small delay to make streaming visible
-                await Task.Delay(50, cancellationToken);
             }
         }
 
@@ -398,7 +395,7 @@ public class ExecutionService
                 // Fallback for other workflow types
                 _logger.LogWarning("Unsupported workflow input type for {WorkflowId}: {Type}", entityId, workflowType);
                 return CreateSimpleResponse(request,
-                    $"⚙️ Workflow '{entityId}' executed. Unsupported input type: {workflowType}. Please implement specific input handling.");
+                    $"Workflow '{entityId}' executed. Unsupported input type: {workflowType}. Please implement specific input handling.");
             }
         }
         catch (Exception ex)
@@ -429,7 +426,7 @@ public class ExecutionService
         if (responseBuilder.Count == 0)
         {
             var status = await run.GetStatusAsync();
-            responseBuilder.Add($"🔄 Workflow '{workflowId}' completed with status: {status}");
+            responseBuilder.Add($"Workflow '{workflowId}' completed with status: {status}");
         }
 
         var finalResponse = string.Join("\n", responseBuilder);
@@ -444,39 +441,39 @@ public class ExecutionService
         return evt switch
         {
             AgentRunResponseEvent responseEvent =>
-                $"🤖 Agent Response: {responseEvent.Response.Text ?? "No content"}",
+                $"Agent Response: {responseEvent.Response.Text ?? "No content"}",
 
             AgentRunUpdateEvent updateEvent =>
-                $"📝 Agent Update: {updateEvent.Update.Text ?? "Update"}",
+                $"Agent Update: {updateEvent.Update.Text ?? "Update"}",
 
             ExecutorCompletedEvent completedEvent =>
-                $"✅ Executor completed: {completedEvent.ExecutorId}",
+                $"Executor completed: {completedEvent.ExecutorId}",
 
             WorkflowStartedEvent startedEvent =>
-                $"🚀 Workflow started: {startedEvent.Data?.ToString() ?? "Processing input"}",
+                $"Workflow started: {startedEvent.Data?.ToString() ?? "Processing input"}",
 
             WorkflowErrorEvent errorEvent =>
-                $"❌ Workflow error: {(errorEvent.Data as Exception)?.Message ?? "Unknown error"}",
+                $"Workflow error: {(errorEvent.Data as Exception)?.Message ?? "Unknown error"}",
 
             WorkflowWarningEvent warningEvent =>
-                $"⚠️ Workflow warning: {warningEvent.Data?.ToString() ?? "Warning occurred"}",
+                $"Workflow warning: {warningEvent.Data?.ToString() ?? "Warning occurred"}",
 
             // ExecutorFailureEvent removed - not available in current framework
 
             ExecutorInvokedEvent invokedEvent =>
-                $"🔧 Executor '{invokedEvent.ExecutorId}' invoked: {invokedEvent.Data?.ToString() ?? "Processing"}",
+                $"Executor '{invokedEvent.ExecutorId}' invoked: {invokedEvent.Data?.ToString() ?? "Processing"}",
 
             SuperStepStartedEvent stepStartedEvent =>
-                $"📊 Step {stepStartedEvent.StepNumber} started",
+                $"Step {stepStartedEvent.StepNumber} started",
 
             SuperStepCompletedEvent stepCompletedEvent =>
-                $"📈 Step {stepCompletedEvent.StepNumber} completed",
+                $"Step {stepCompletedEvent.StepNumber} completed",
 
             RequestInfoEvent requestEvent =>
-                $"📨 External request: {requestEvent.Data?.ToString() ?? "User input required"}",
+                $"External request: {requestEvent.Data?.ToString() ?? "User input required"}",
 
             _ =>
-                $"📋 {evt.GetType().Name}: {evt.Data?.ToString() ?? "No data"}"
+                $"{evt.GetType().Name}: {evt.Data?.ToString() ?? "No data"}"
         };
     }
 

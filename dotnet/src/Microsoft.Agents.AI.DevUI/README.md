@@ -364,21 +364,21 @@ The `ExecutionService` provides unified execution for both agents and workflows:
 
 Workflow events are converted to human-readable text for OpenAI-compatible responses:
 
-| Event Type                | Icon | Description                      | Output Format                                   | Example                                           |
-| ------------------------- | ---- | -------------------------------- | ----------------------------------------------- | ------------------------------------------------- |
-| `AgentRunResponseEvent`   | 🤖   | Agent produces a response        | `🤖 Agent Response: {response.Text}`            | `🤖 Agent Response: The weather is sunny, 72°F`   |
-| `AgentRunUpdateEvent`     | 📝   | Agent produces streaming update  | `📝 Agent Update: {update.Text}`                | `📝 Agent Update: Processing weather data...`     |
-| `WorkflowCompletedEvent`  | ✅   | Workflow execution completed     | `✅ Workflow completed successfully`            | `✅ Workflow completed successfully`              |
-| `WorkflowStartedEvent`    | 🚀   | Workflow execution started       | `🚀 Workflow started: {message}`                | `🚀 Workflow started: Processing user input`      |
-| `WorkflowErrorEvent`      | ❌   | Workflow encountered an error    | `❌ Workflow error: {exception.Message}`        | `❌ Workflow error: Null reference exception`     |
-| `WorkflowWarningEvent`    | ⚠️   | Workflow warning occurred        | `⚠️ Workflow warning: {message}`                | `⚠️ Workflow warning: Connection timeout`         |
-| `ExecutorCompletedEvent`  | ⚙️   | Executor finished successfully   | `⚙️ Executor '{executorId}' completed`          | `⚙️ Executor 'weather-processor' completed`       |
-| `ExecutorFailureEvent`    | ❌   | Executor failed during execution | `❌ Executor '{executorId}' failed: {error}`    | `❌ Executor 'data-fetcher' failed: API timeout`  |
-| `ExecutorInvokedEvent`    | 🔧   | Executor was called              | `🔧 Executor '{executorId}' invoked: {message}` | `🔧 Executor 'validator' invoked: Checking input` |
-| `SuperStepStartedEvent`   | 📊   | Workflow step started            | `📊 Step {stepNumber} started`                  | `📊 Step 1 started`                               |
-| `SuperStepCompletedEvent` | 📈   | Workflow step completed          | `📈 Step {stepNumber} completed`                | `📈 Step 1 completed`                             |
-| `RequestInfoEvent`        | 📨   | External request received        | `📨 External request: {request}`                | `📨 External request: User input required`        |
-| **Other Events**          | 📋   | Any unmapped event               | `📋 {EventType}: {data}`                        | `📋 CustomEvent: Additional data`                 |
+| Event Type                | Description                      | Output Format                                | Example                                        |
+| ------------------------- | -------------------------------- | -------------------------------------------- | ---------------------------------------------- |
+| `AgentRunResponseEvent`   | Agent produces a response        | `Agent Response: {response.Text}`            | `Agent Response: The weather is sunny, 72°F`   |
+| `AgentRunUpdateEvent`     | Agent produces streaming update  | `Agent Update: {update.Text}`                | `Agent Update: Processing weather data...`     |
+| `WorkflowCompletedEvent`  | Workflow execution completed     | `Workflow completed successfully`            | `Workflow completed successfully`              |
+| `WorkflowStartedEvent`    | Workflow execution started       | `Workflow started: {message}`                | `Workflow started: Processing user input`      |
+| `WorkflowErrorEvent`      | Workflow encountered an error    | `Workflow error: {exception.Message}`        | `Workflow error: Null reference exception`     |
+| `WorkflowWarningEvent`    | Workflow warning occurred        | `Workflow warning: {message}`                | `Workflow warning: Connection timeout`         |
+| `ExecutorCompletedEvent`  | Executor finished successfully   | `Executor '{executorId}' completed`          | `Executor 'weather-processor' completed`       |
+| `ExecutorFailureEvent`    | Executor failed during execution | `Executor '{executorId}' failed: {error}`    | `Executor 'data-fetcher' failed: API timeout`  |
+| `ExecutorInvokedEvent`    | Executor was called              | `Executor '{executorId}' invoked: {message}` | `Executor 'validator' invoked: Checking input` |
+| `SuperStepStartedEvent`   | Workflow step started            | `Step {stepNumber} started`                  | `Step 1 started`                               |
+| `SuperStepCompletedEvent` | Workflow step completed          | `Step {stepNumber} completed`                | `Step 1 completed`                             |
+| `RequestInfoEvent`        | External request received        | `External request: {request}`                | `External request: User input required`        |
+| **Other Events**          | Any unmapped event               | `{EventType}: {data}`                        | `CustomEvent: Additional data`                 |
 
 **Note**: All events include their raw data in the `Data` property, which is converted to string representation in the output. Events without meaningful data show "No data" in the output.
 
