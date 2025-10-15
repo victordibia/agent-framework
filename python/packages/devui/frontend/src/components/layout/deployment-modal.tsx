@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogClose,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -52,14 +53,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy agent code
+# Copy agent/workflow directories
 COPY . .
 
-# Expose port (if needed for API)
-EXPOSE 8000
+# Expose DevUI default port
+EXPOSE 8080
 
-# Run the agent
-CMD ["python", "main.py"]
+# Run DevUI server
+CMD ["devui", ".", "--port", "8080", "--host", "0.0.0.0"]
 `;
 
   const dockerComposeTemplate = `# docker-compose.yml
@@ -69,29 +70,40 @@ services:
   ${agentName.toLowerCase().replace(/\s+/g, '-')}:
     build: .
     environment:
+      # OpenAI
       - OPENAI_API_KEY=\${OPENAI_API_KEY}
+      - OPENAI_CHAT_MODEL_ID=\${OPENAI_CHAT_MODEL_ID:-gpt-4o-mini}
+      # Or Azure OpenAI
       - AZURE_OPENAI_API_KEY=\${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=\${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=\${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME}
+      # Optional: Enable tracing
+      - ENABLE_OTEL=\${ENABLE_OTEL:-false}
     ports:
-      - "8000:8000"
+      - "8080:8080"
     restart: unless-stopped
 `;
 
   const requirementsTemplate = `# requirements.txt
+agent-framework-devui>=0.1.0
 agent-framework>=0.1.0
+# Chat clients (install what you need)
 openai>=1.0.0
-python-dotenv>=1.0.0
+# azure-openai
+# anthropic
 `;
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="w-[800px] max-w-[90vw]">
+        <DialogClose onClose={onClose} />
         <DialogHeader className="p-6 pb-2">
           <DialogTitle className="flex items-center gap-2">
             <Rocket className="h-5 w-5" />
             Deploy {agentName}
           </DialogTitle>
           <p className="text-sm text-muted-foreground pt-1">
-            Your agent is ready to deploy! Choose a deployment method below.
+            Get started with containerizing your agent for deployment.
           </p>
         </DialogHeader>
 
@@ -236,6 +248,17 @@ python-dotenv>=1.0.0
                     </ol>
                   </div>
 
+                  {/* Production Warnings */}
+                  <div className="bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-md p-3">
+                    <h4 className="text-sm font-semibold mb-2 text-amber-900 dark:text-amber-100">⚠️ Production Considerations</h4>
+                    <ul className="text-xs space-y-1 list-disc list-inside text-amber-800 dark:text-amber-200">
+                      <li><strong>In-memory state:</strong> Conversations are lost when container restarts</li>
+                      <li><strong>No authentication:</strong> Add reverse proxy (nginx, Caddy) with auth for production</li>
+                      <li><strong>Security:</strong> Use Azure Key Vault for secrets management</li>
+                      <li><strong>Scaling:</strong> Single instance only due to in-memory conversation store</li>
+                    </ul>
+                  </div>
+
                   {/* Deployment Checklist */}
                   <div className="border-t pt-4">
                     <h4 className="font-semibold text-sm mb-3">Pre-Deployment Checklist</h4>
@@ -347,10 +370,10 @@ az acr build --registry myregistry \\
   --resource-group myResourceGroup \\
   --environment myEnvironment \\
   --image myregistry.azurecr.io/${agentName.toLowerCase()}-agent:latest \\
-  --target-port 8000 \\
+  --target-port 8080 \\
   --ingress 'external' \\
   --registry-server myregistry.azurecr.io \\
-  --env-vars OPENAI_API_KEY=secretref:openai-key`}
+  --env-vars OPENAI_API_KEY=secretref:openai-key OPENAI_CHAT_MODEL_ID=gpt-4o-mini`}
                         </pre>
                       </div>
 

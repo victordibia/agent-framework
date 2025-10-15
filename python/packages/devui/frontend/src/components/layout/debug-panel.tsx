@@ -98,7 +98,7 @@ interface DebugPanelProps {
   onClose?: () => void;
 }
 
-// Helper: Extract function result from DevUI custom format
+// Helper: Extract function result from DevUI custom event
 function getFunctionResultFromEvent(event: ExtendedResponseStreamEvent): {
   call_id: string;
   output: string;
@@ -431,15 +431,17 @@ function getEventSummary(event: ExtendedResponseStreamEvent): string {
       }
       return "Function arguments...";
 
+    case "response.function_result.complete": {
+      const resultEvent =
+        event as import("@/types").ResponseFunctionResultComplete;
+      const truncated = resultEvent.output.slice(0, 40);
+      return `Function result: ${truncated}${
+        truncated.length >= 40 ? "..." : ""
+      }`;
+    }
+
     case "response.output_item.added": {
-      const result = getFunctionResultFromEvent(event);
-      if (result) {
-        const truncated = result.output.slice(0, 40);
-        return `Tool result: ${truncated}${
-          truncated.length >= 40 ? "..." : ""
-        }`;
-      }
-      // Could also be a function call
+      // Could be a function call
       const addedEvent =
         event as import("@/types").ResponseOutputItemAddedEvent;
       if (addedEvent.item.type === "function_call") {
@@ -497,6 +499,8 @@ function getEventIcon(type: string) {
     case "response.function_call.delta":
     case "response.function_call_arguments.delta":
       return Wrench;
+    case "response.function_result.complete":
+      return CheckCircle2;
     case "response.output_item.added":
       return CheckCircle2;
     case "response.workflow_event.complete":
@@ -523,6 +527,8 @@ function getEventColor(type: string) {
     case "response.function_call.delta":
     case "response.function_call_arguments.delta":
       return "text-blue-600 dark:text-blue-400";
+    case "response.function_result.complete":
+      return "text-green-600 dark:text-green-400";
     case "response.output_item.added":
       return "text-green-600 dark:text-green-400";
     case "response.workflow_event.complete":
@@ -553,10 +559,9 @@ function EventItem({ event }: EventItemProps) {
     (event.type === "response.function_call.complete" &&
       "data" in event &&
       event.data) ||
+    event.type === "response.function_result.complete" ||
     (event.type === "response.output_item.added" &&
       getFunctionResultFromEvent(event) !== null) ||
-    // Make function result events expandable
-    event.type === "response.function_result.complete" ||
     (event.type === "response.workflow_event.complete" &&
       "data" in event &&
       event.data) ||
@@ -727,7 +732,53 @@ function EventExpandedContent({
       }
       break;
 
-    case "response.function_result.complete":
+    case "response.function_result.complete": {
+      const resultEvent =
+        event as import("@/types").ResponseFunctionResultComplete;
+      return (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <span className="font-semibold text-sm">Function Result</span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 text-xs">
+            <div>
+              <span className="font-medium text-muted-foreground">
+                Call ID:
+              </span>
+              <span className="ml-2 font-mono text-xs">
+                {resultEvent.call_id}
+              </span>
+            </div>
+            <div>
+              <span className="font-medium text-muted-foreground">
+                Status:
+              </span>
+              <span
+                className={`ml-2 px-2 py-1 rounded text-xs font-medium ${
+                  resultEvent.status === "completed"
+                    ? "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200"
+                    : "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200"
+                }`}
+              >
+                {resultEvent.status}
+              </span>
+            </div>
+            <div>
+              <span className="font-medium text-muted-foreground">
+                Output:
+              </span>
+              <div className="mt-1 max-h-32 overflow-auto">
+                <pre className="text-xs bg-background border rounded p-2 whitespace-pre-wrap max-w-full break-all">
+                  {resultEvent.output}
+                </pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     case "response.output_item.added": {
       const result = getFunctionResultFromEvent(event);
       if (result) {
@@ -1120,14 +1171,14 @@ function TracesTab({ events }: { events: ExtendedResponseStreamEvent[] }) {
   const reversedTraceEvents = [...tracesWithSeparators].reverse();
 
   return (
-    <div className="h-full">
+    <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 p-3 border-b">
         <Search className="h-4 w-4" />
         <span className="font-medium">Traces</span>
         <Badge variant="outline">{traceEvents.length}</Badge>
       </div>
 
-      <ScrollArea className="">
+      <ScrollArea className="flex-1">
         <div className="p-3">
           {traceEvents.length === 0 ? (
             <div className="text-center text-muted-foreground text-sm py-8">
@@ -1405,14 +1456,14 @@ function ToolsTab({ events }: { events: ExtendedResponseStreamEvent[] }) {
   const reversedToolEvents = [...toolsWithSeparators].reverse();
 
   return (
-    <div className="h-full">
+    <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 p-3 border-b">
         <Wrench className="h-4 w-4" />
         <span className="font-medium">Tools</span>
         <Badge variant="outline">{toolEvents.length}</Badge>
       </div>
 
-      <ScrollArea>
+      <ScrollArea className="flex-1">
         <div className="p-3">
           {toolEvents.length === 0 ? (
             <div className="text-center text-muted-foreground text-sm py-8">
