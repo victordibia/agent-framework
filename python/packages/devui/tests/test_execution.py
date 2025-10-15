@@ -73,8 +73,8 @@ async def test_executor_entity_discovery(executor):
     for entity in entities:
         assert entity.id, "Entity should have an ID"
         assert entity.name, "Entity should have a name"
-        # During discovery phase, file-based entities may have type="unknown"
-        # until they are lazy-loaded. This supports flexible file naming.
+        # Entities with only an `__init__.py` file cannot have their type determined
+        # until the module is imported during lazy loading. This is why 'unknown' type exists.
         assert entity.type in ["agent", "workflow", "unknown"], (
             "Entity should have valid type (unknown allowed during discovery phase)"
         )

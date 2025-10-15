@@ -3,7 +3,7 @@
  * Features: Docker setup files, Azure Container Apps deployment guide
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -37,11 +37,37 @@ export function DeploymentModal({
 }: DeploymentModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>("docker");
   const [copiedTemplate, setCopiedTemplate] = useState<string | null>(null);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleCopy = (template: string, templateName: string) => {
-    navigator.clipboard.writeText(template);
-    setCopiedTemplate(templateName);
-    setTimeout(() => setCopiedTemplate(null), 2000);
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopy = async (template: string, templateName: string) => {
+    try {
+      await navigator.clipboard.writeText(template);
+      setCopiedTemplate(templateName);
+
+      // Clear any existing timeout
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+
+      // Set new timeout with cleanup
+      timeoutRef.current = setTimeout(() => {
+        setCopiedTemplate(null);
+        timeoutRef.current = null;
+      }, 2000);
+    } catch (err) {
+      console.error("Failed to copy template:", err);
+      // Reset state on error
+      setCopiedTemplate(null);
+    }
   };
 
   const dockerfileTemplate = `# Dockerfile for ${agentName}
@@ -67,7 +93,7 @@ CMD ["devui", ".", "--port", "8080", "--host", "0.0.0.0"]
 version: '3.8'
 
 services:
-  ${agentName.toLowerCase().replace(/\s+/g, '-')}:
+  ${agentName.toLowerCase().replace(/\s+/g, "-")}:
     build: .
     environment:
       # OpenAI
@@ -146,9 +172,12 @@ openai>=1.0.0
               {activeTab === "docker" && (
                 <div className="space-y-4 pt-4">
                   <div>
-                    <h3 className="font-semibold mb-2">Containerize with Docker</h3>
+                    <h3 className="font-semibold mb-2">
+                      Containerize with Docker
+                    </h3>
                     <p className="text-sm text-muted-foreground">
-                      Package your agent as a Docker container for consistent deployment anywhere.
+                      Package your agent as a Docker container for consistent
+                      deployment anywhere.
                     </p>
                   </div>
 
@@ -159,7 +188,9 @@ openai>=1.0.0
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => handleCopy(dockerfileTemplate, "dockerfile")}
+                        onClick={() =>
+                          handleCopy(dockerfileTemplate, "dockerfile")
+                        }
                       >
                         {copiedTemplate === "dockerfile" ? (
                           <>
@@ -182,11 +213,15 @@ openai>=1.0.0
                   {/* docker-compose.yml */}
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium">docker-compose.yml</span>
+                      <span className="text-sm font-medium">
+                        docker-compose.yml
+                      </span>
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => handleCopy(dockerComposeTemplate, "compose")}
+                        onClick={() =>
+                          handleCopy(dockerComposeTemplate, "compose")
+                        }
                       >
                         {copiedTemplate === "compose" ? (
                           <>
@@ -209,11 +244,15 @@ openai>=1.0.0
                   {/* requirements.txt */}
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium">requirements.txt</span>
+                      <span className="text-sm font-medium">
+                        requirements.txt
+                      </span>
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => handleCopy(requirementsTemplate, "requirements")}
+                        onClick={() =>
+                          handleCopy(requirementsTemplate, "requirements")
+                        }
                       >
                         {copiedTemplate === "requirements" ? (
                           <>
@@ -239,10 +278,16 @@ openai>=1.0.0
                     <ol className="text-xs space-y-1 list-decimal list-inside text-muted-foreground">
                       <li>Save the files above to your project directory</li>
                       <li>
-                        Build: <code className="bg-muted px-1 rounded">docker build -t {agentName.toLowerCase()}-agent .</code>
+                        Build:{" "}
+                        <code className="bg-muted px-1 rounded">
+                          docker build -t {agentName.toLowerCase()}-agent .
+                        </code>
                       </li>
                       <li>
-                        Run: <code className="bg-muted px-1 rounded">docker-compose up</code>
+                        Run:{" "}
+                        <code className="bg-muted px-1 rounded">
+                          docker-compose up
+                        </code>
                       </li>
                       <li>Your agent is now running in a container!</li>
                     </ol>
@@ -250,34 +295,58 @@ openai>=1.0.0
 
                   {/* Production Warnings */}
                   <div className="bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-md p-3">
-                    <h4 className="text-sm font-semibold mb-2 text-amber-900 dark:text-amber-100">⚠️ Production Considerations</h4>
+                    <h4 className="text-sm font-semibold mb-2 text-amber-900 dark:text-amber-100">
+                      ⚠️ Production Considerations
+                    </h4>
                     <ul className="text-xs space-y-1 list-disc list-inside text-amber-800 dark:text-amber-200">
-                      <li><strong>In-memory state:</strong> Conversations are lost when container restarts</li>
-                      <li><strong>No authentication:</strong> Add reverse proxy (nginx, Caddy) with auth for production</li>
-                      <li><strong>Security:</strong> Use Azure Key Vault for secrets management</li>
-                      <li><strong>Scaling:</strong> Single instance only due to in-memory conversation store</li>
+                      <li>
+                        <strong>In-memory state:</strong> Conversations are lost
+                        when container restarts
+                      </li>
+                      <li>
+                        <strong>No authentication:</strong> Add reverse proxy
+                        (nginx, Caddy) with auth for production
+                      </li>
+                      <li>
+                        <strong>Security:</strong> Use Azure Key Vault for
+                        secrets management
+                      </li>
+                      <li>
+                        <strong>Scaling:</strong> Single instance only due to
+                        in-memory conversation store
+                      </li>
                     </ul>
                   </div>
 
                   {/* Deployment Checklist */}
                   <div className="border-t pt-4">
-                    <h4 className="font-semibold text-sm mb-3">Pre-Deployment Checklist</h4>
+                    <h4 className="font-semibold text-sm mb-3">
+                      Pre-Deployment Checklist
+                    </h4>
                     <div className="space-y-2 text-sm">
                       <div className="flex items-start gap-2">
                         <CheckCircle2 className="h-4 w-4 mt-0.5 text-muted-foreground flex-shrink-0" />
-                        <span className="text-muted-foreground">Set environment variables (API keys, secrets)</span>
+                        <span className="text-muted-foreground">
+                          Set environment variables (API keys, secrets)
+                        </span>
                       </div>
                       <div className="flex items-start gap-2">
                         <CheckCircle2 className="h-4 w-4 mt-0.5 text-muted-foreground flex-shrink-0" />
-                        <span className="text-muted-foreground">Test agent locally in container</span>
+                        <span className="text-muted-foreground">
+                          Test agent locally in container
+                        </span>
                       </div>
                       <div className="flex items-start gap-2">
                         <CheckCircle2 className="h-4 w-4 mt-0.5 text-muted-foreground flex-shrink-0" />
-                        <span className="text-muted-foreground">Configure logging and monitoring</span>
+                        <span className="text-muted-foreground">
+                          Configure logging and monitoring
+                        </span>
                       </div>
                       <div className="flex items-start gap-2">
                         <CheckCircle2 className="h-4 w-4 mt-0.5 text-muted-foreground flex-shrink-0" />
-                        <span className="text-muted-foreground">Set up error handling and retries</span>
+                        <span className="text-muted-foreground">
+                          Set up error handling and retries
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -287,9 +356,12 @@ openai>=1.0.0
               {activeTab === "azure" && (
                 <div className="space-y-4 pt-4">
                   <div>
-                    <h3 className="font-semibold mb-2">Deploy to Azure Container Apps</h3>
+                    <h3 className="font-semibold mb-2">
+                      Deploy to Azure Container Apps
+                    </h3>
                     <p className="text-sm text-muted-foreground">
-                      Azure Container Apps provides serverless containers with auto-scaling and integrated monitoring.
+                      Azure Container Apps provides serverless containers with
+                      auto-scaling and integrated monitoring.
                     </p>
                   </div>
 
@@ -298,9 +370,18 @@ openai>=1.0.0
                     <h4 className="font-medium text-sm">Prerequisites</h4>
                     <ul className="text-xs space-y-1 list-disc list-inside text-muted-foreground">
                       <li>Azure subscription</li>
-                      <li>Azure CLI installed (<code className="bg-muted px-1 rounded">az --version</code>)</li>
+                      <li>
+                        Azure CLI installed (
+                        <code className="bg-muted px-1 rounded">
+                          az --version
+                        </code>
+                        )
+                      </li>
                       <li>Docker installed and running</li>
-                      <li>Logged in to Azure: <code className="bg-muted px-1 rounded">az login</code></li>
+                      <li>
+                        Logged in to Azure:{" "}
+                        <code className="bg-muted px-1 rounded">az login</code>
+                      </li>
                     </ul>
                   </div>
 
@@ -315,10 +396,12 @@ openai>=1.0.0
                           <div className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
                             1
                           </div>
-                          <h5 className="font-medium text-sm">Create Azure Container Registry</h5>
+                          <h5 className="font-medium text-sm">
+                            Create Azure Container Registry
+                          </h5>
                         </div>
                         <pre className="bg-muted p-2 rounded text-xs overflow-x-auto border mt-2">
-{`# Create resource group
+                          {`# Create resource group
 az group create --name myResourceGroup --location eastus
 
 # Create container registry
@@ -333,10 +416,12 @@ az acr create --resource-group myResourceGroup \\
                           <div className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
                             2
                           </div>
-                          <h5 className="font-medium text-sm">Build and Push Docker Image</h5>
+                          <h5 className="font-medium text-sm">
+                            Build and Push Docker Image
+                          </h5>
                         </div>
                         <pre className="bg-muted p-2 rounded text-xs overflow-x-auto border mt-2">
-{`# Build and push in one command
+                          {`# Build and push in one command
 az acr build --registry myregistry \\
   --image ${agentName.toLowerCase()}-agent:latest .`}
                         </pre>
@@ -348,10 +433,12 @@ az acr build --registry myregistry \\
                           <div className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
                             3
                           </div>
-                          <h5 className="font-medium text-sm">Create Container Apps Environment</h5>
+                          <h5 className="font-medium text-sm">
+                            Create Container Apps Environment
+                          </h5>
                         </div>
                         <pre className="bg-muted p-2 rounded text-xs overflow-x-auto border mt-2">
-{`az containerapp env create --name myEnvironment \\
+                          {`az containerapp env create --name myEnvironment \\
   --resource-group myResourceGroup \\
   --location eastus`}
                         </pre>
@@ -363,10 +450,12 @@ az acr build --registry myregistry \\
                           <div className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
                             4
                           </div>
-                          <h5 className="font-medium text-sm">Deploy Container App</h5>
+                          <h5 className="font-medium text-sm">
+                            Deploy Container App
+                          </h5>
                         </div>
                         <pre className="bg-muted p-2 rounded text-xs overflow-x-auto border mt-2">
-{`az containerapp create --name ${agentName.toLowerCase()}-app \\
+                          {`az containerapp create --name ${agentName.toLowerCase()}-app \\
   --resource-group myResourceGroup \\
   --environment myEnvironment \\
   --image myregistry.azurecr.io/${agentName.toLowerCase()}-agent:latest \\
@@ -383,10 +472,12 @@ az acr build --registry myregistry \\
                           <div className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
                             5
                           </div>
-                          <h5 className="font-medium text-sm">Get Application URL</h5>
+                          <h5 className="font-medium text-sm">
+                            Get Application URL
+                          </h5>
                         </div>
                         <pre className="bg-muted p-2 rounded text-xs overflow-x-auto border mt-2">
-{`az containerapp show --name ${agentName.toLowerCase()}-app \\
+                          {`az containerapp show --name ${agentName.toLowerCase()}-app \\
   --resource-group myResourceGroup \\
   --query properties.configuration.ingress.fqdn`}
                         </pre>
@@ -398,9 +489,15 @@ az acr build --registry myregistry \\
                   <div className="bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-md p-3">
                     <h4 className="text-sm font-semibold mb-2">Learn More</h4>
                     <p className="text-xs text-muted-foreground mb-3">
-                      Explore Azure Container Apps documentation for advanced features like scaling, monitoring, and CI/CD integration.
+                      Explore Azure Container Apps documentation for advanced
+                      features like scaling, monitoring, and CI/CD integration.
                     </p>
-                    <Button size="sm" variant="outline" className="w-full" asChild>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      asChild
+                    >
                       <a
                         href="https://learn.microsoft.com/azure/container-apps/"
                         target="_blank"

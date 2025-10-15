@@ -18,7 +18,7 @@
  * - Horizontal rules (---)
  */
 
-import React, { useState } from 'react';
+import React, { useState } from "react";
 
 interface MarkdownRendererProps {
   content: string;
@@ -35,14 +35,34 @@ interface CodeBlockProps {
  */
 function CodeBlock({ code, language }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const timeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup timeout on unmount
+  React.useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+
+      // Clear any existing timeout
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+
+      // Set new timeout and store reference
+      timeoutRef.current = setTimeout(() => {
+        setCopied(false);
+        timeoutRef.current = null;
+      }, 2000);
     } catch (err) {
-      console.error('Failed to copy code:', err);
+      console.error("Failed to copy code:", err);
     }
   };
 
@@ -65,14 +85,35 @@ function CodeBlock({ code, language }: CodeBlockProps) {
                    text-muted-foreground hover:text-foreground
                    transition-all duration-200
                    opacity-0 group-hover:opacity-100"
-        title={copied ? 'Copied!' : 'Copy code'}
+        title={copied ? "Copied!" : "Copy code"}
       >
         {copied ? (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-600 dark:text-green-400">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-green-600 dark:text-green-400"
+          >
             <polyline points="20 6 9 17 4 12"></polyline>
           </svg>
         ) : (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
@@ -85,8 +126,11 @@ function CodeBlock({ code, language }: CodeBlockProps) {
 /**
  * Parse markdown text into React elements
  */
-export function MarkdownRenderer({ content, className = '' }: MarkdownRendererProps) {
-  const lines = content.split('\n');
+export function MarkdownRenderer({
+  content,
+  className = "",
+}: MarkdownRendererProps) {
+  const lines = content.split("\n");
   const elements: React.ReactNode[] = [];
   let i = 0;
 
@@ -94,13 +138,13 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     const line = lines[i];
 
     // Code blocks (multiline)
-    if (line.trim().startsWith('```')) {
+    if (line.trim().startsWith("```")) {
       const codeLines: string[] = [];
       const langMatch = line.trim().match(/^```(\w+)?/);
-      const language = langMatch?.[1] || '';
+      const language = langMatch?.[1] || "";
       i++; // Skip opening ```
 
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
         codeLines.push(lines[i]);
         i++;
       }
@@ -109,7 +153,7 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       elements.push(
         <CodeBlock
           key={elements.length}
-          code={codeLines.join('\n')}
+          code={codeLines.join("\n")}
           language={language}
         />
       );
@@ -121,23 +165,45 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     if (headerMatch) {
       const level = headerMatch[1].length;
       const text = headerMatch[2];
-      const sizes = ['text-2xl', 'text-xl', 'text-lg', 'text-base', 'text-sm', 'text-sm'];
-      const className = `${sizes[level - 1]} font-semibold mt-4 mb-2 first:mt-0 break-words`;
+      const sizes = [
+        "text-2xl",
+        "text-xl",
+        "text-lg",
+        "text-base",
+        "text-sm",
+        "text-sm",
+      ];
+      const className = `${
+        sizes[level - 1]
+      } font-semibold mt-4 mb-2 first:mt-0 break-words`;
 
       // Render appropriate header level
-      const header = level === 1 ? (
-        <h1 key={elements.length} className={className}>{parseInlineMarkdown(text)}</h1>
-      ) : level === 2 ? (
-        <h2 key={elements.length} className={className}>{parseInlineMarkdown(text)}</h2>
-      ) : level === 3 ? (
-        <h3 key={elements.length} className={className}>{parseInlineMarkdown(text)}</h3>
-      ) : level === 4 ? (
-        <h4 key={elements.length} className={className}>{parseInlineMarkdown(text)}</h4>
-      ) : level === 5 ? (
-        <h5 key={elements.length} className={className}>{parseInlineMarkdown(text)}</h5>
-      ) : (
-        <h6 key={elements.length} className={className}>{parseInlineMarkdown(text)}</h6>
-      );
+      const header =
+        level === 1 ? (
+          <h1 key={elements.length} className={className}>
+            {parseInlineMarkdown(text)}
+          </h1>
+        ) : level === 2 ? (
+          <h2 key={elements.length} className={className}>
+            {parseInlineMarkdown(text)}
+          </h2>
+        ) : level === 3 ? (
+          <h3 key={elements.length} className={className}>
+            {parseInlineMarkdown(text)}
+          </h3>
+        ) : level === 4 ? (
+          <h4 key={elements.length} className={className}>
+            {parseInlineMarkdown(text)}
+          </h4>
+        ) : level === 5 ? (
+          <h5 key={elements.length} className={className}>
+            {parseInlineMarkdown(text)}
+          </h5>
+        ) : (
+          <h6 key={elements.length} className={className}>
+            {parseInlineMarkdown(text)}
+          </h6>
+        );
 
       elements.push(header);
       i++;
@@ -149,13 +215,16 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       const listItems: string[] = [];
 
       while (i < lines.length && lines[i].match(/^[\s]*[-*+]\s+/)) {
-        const itemText = lines[i].replace(/^[\s]*[-*+]\s+/, '');
+        const itemText = lines[i].replace(/^[\s]*[-*+]\s+/, "");
         listItems.push(itemText);
         i++;
       }
 
       elements.push(
-        <ul key={elements.length} className="my-2 ml-4 list-disc space-y-1 break-words">
+        <ul
+          key={elements.length}
+          className="my-2 ml-4 list-disc space-y-1 break-words"
+        >
           {listItems.map((item, idx) => (
             <li key={idx} className="text-sm break-words">
               {parseInlineMarkdown(item)}
@@ -171,13 +240,16 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       const listItems: string[] = [];
 
       while (i < lines.length && lines[i].match(/^[\s]*\d+\.\s+/)) {
-        const itemText = lines[i].replace(/^[\s]*\d+\.\s+/, '');
+        const itemText = lines[i].replace(/^[\s]*\d+\.\s+/, "");
         listItems.push(itemText);
         i++;
       }
 
       elements.push(
-        <ol key={elements.length} className="my-2 ml-4 list-decimal space-y-1 break-words">
+        <ol
+          key={elements.length}
+          className="my-2 ml-4 list-decimal space-y-1 break-words"
+        >
           {listItems.map((item, idx) => (
             <li key={idx} className="text-sm break-words">
               {parseInlineMarkdown(item)}
@@ -189,11 +261,15 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     }
 
     // Tables
-    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+    if (line.trim().startsWith("|") && line.trim().endsWith("|")) {
       const tableLines: string[] = [];
 
       // Collect all table lines
-      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+      while (
+        i < lines.length &&
+        lines[i].trim().startsWith("|") &&
+        lines[i].trim().endsWith("|")
+      ) {
         tableLines.push(lines[i].trim());
         i++;
       }
@@ -201,16 +277,19 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       // Parse table (need at least 2 lines: header + separator)
       if (tableLines.length >= 2) {
         const headerCells = tableLines[0]
-          .split('|')
+          .split("|")
           .slice(1, -1)
-          .map(cell => cell.trim());
+          .map((cell) => cell.trim());
 
         // Check if second line is a separator (contains dashes)
         const isSeparator = tableLines[1].match(/^\|[\s\-:|]+\|$/);
 
         if (isSeparator) {
-          const bodyRows = tableLines.slice(2).map(row =>
-            row.split('|').slice(1, -1).map(cell => cell.trim())
+          const bodyRows = tableLines.slice(2).map((row) =>
+            row
+              .split("|")
+              .slice(1, -1)
+              .map((cell) => cell.trim())
           );
 
           elements.push(
@@ -230,9 +309,15 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
                 </thead>
                 <tbody>
                   {bodyRows.map((row, rowIdx) => (
-                    <tr key={rowIdx} className="border-b border-foreground/5 last:border-b-0">
+                    <tr
+                      key={rowIdx}
+                      className="border-b border-foreground/5 last:border-b-0"
+                    >
                       {row.map((cell, cellIdx) => (
-                        <td key={cellIdx} className="px-3 py-2 border-r border-foreground/5 last:border-r-0 break-words">
+                        <td
+                          key={cellIdx}
+                          className="px-3 py-2 border-r border-foreground/5 last:border-r-0 break-words"
+                        >
                           {parseInlineMarkdown(cell)}
                         </td>
                       ))}
@@ -258,11 +343,11 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     }
 
     // Blockquotes
-    if (line.trim().startsWith('>')) {
+    if (line.trim().startsWith(">")) {
       const quoteLines: string[] = [];
 
-      while (i < lines.length && lines[i].trim().startsWith('>')) {
-        quoteLines.push(lines[i].replace(/^>\s?/, ''));
+      while (i < lines.length && lines[i].trim().startsWith(">")) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ""));
         i++;
       }
 
@@ -272,7 +357,9 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
           className="my-2 pl-4 border-l-4 border-current/30 opacity-80 italic break-words"
         >
           {quoteLines.map((quoteLine, idx) => (
-            <div key={idx} className="break-words">{parseInlineMarkdown(quoteLine)}</div>
+            <div key={idx} className="break-words">
+              {parseInlineMarkdown(quoteLine)}
+            </div>
           ))}
         </blockquote>
       );
@@ -289,7 +376,7 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     }
 
     // Empty line
-    if (line.trim() === '') {
+    if (line.trim() === "") {
       elements.push(<div key={elements.length} className="h-2" />);
       i++;
       continue;
@@ -304,7 +391,11 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     i++;
   }
 
-  return <div className={`markdown-content break-words ${className}`}>{elements}</div>;
+  return (
+    <div className={`markdown-content break-words ${className}`}>
+      {elements}
+    </div>
+  );
 }
 
 /**
@@ -346,11 +437,7 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
     }
 
     // No more special patterns, parse remaining text for bold/italic/links
-    parts.push(
-      <span key={key++}>
-        {parseBoldItalicLinks(remaining)}
-      </span>
-    );
+    parts.push(<span key={key++}>{parseBoldItalicLinks(remaining)}</span>);
     break;
   }
 
@@ -369,15 +456,15 @@ function parseBoldItalicLinks(text: string): React.ReactNode[] {
     // Try to match patterns in order
     // IMPORTANT: Handle **[link](url)** pattern first (bold markers around link)
     const patterns = [
-      { regex: /\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/, component: 'strong-link' },  // **[text](url)**
-      { regex: /__\[([^\]]+)\]\(([^)]+)\)__/, component: 'strong-link' },      // __[text](url)__
-      { regex: /\*\[([^\]]+)\]\(([^)]+)\)\*/, component: 'em-link' },          // *[text](url)*
-      { regex: /_\[([^\]]+)\]\(([^)]+)\)_/, component: 'em-link' },            // _[text](url)_
-      { regex: /\[([^\]]+)\]\(([^)]+)\)/, component: 'link' },                 // [text](url)
-      { regex: /\*\*(.+?)\*\*/, component: 'strong' },                         // **bold**
-      { regex: /__(.+?)__/, component: 'strong' },                             // __bold__
-      { regex: /\*(.+?)\*/, component: 'em' },                                 // *italic*
-      { regex: /_(.+?)_/, component: 'em' },                                   // _italic_
+      { regex: /\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/, component: "strong-link" }, // **[text](url)**
+      { regex: /__\[([^\]]+)\]\(([^)]+)\)__/, component: "strong-link" }, // __[text](url)__
+      { regex: /\*\[([^\]]+)\]\(([^)]+)\)\*/, component: "em-link" }, // *[text](url)*
+      { regex: /_\[([^\]]+)\]\(([^)]+)\)_/, component: "em-link" }, // _[text](url)_
+      { regex: /\[([^\]]+)\]\(([^)]+)\)/, component: "link" }, // [text](url)
+      { regex: /\*\*(.+?)\*\*/, component: "strong" }, // **bold**
+      { regex: /__(.+?)__/, component: "strong" }, // __bold__
+      { regex: /\*(.+?)\*/, component: "em" }, // *italic*
+      { regex: /_(.+?)_/, component: "em" }, // _italic_
     ];
 
     let matched = false;
@@ -392,11 +479,19 @@ function parseBoldItalicLinks(text: string): React.ReactNode[] {
         }
 
         // Add matched element
-        if (pattern.component === 'strong') {
-          parts.push(<strong key={key++} className="font-semibold">{match[1]}</strong>);
-        } else if (pattern.component === 'em') {
-          parts.push(<em key={key++} className="italic">{match[1]}</em>);
-        } else if (pattern.component === 'strong-link') {
+        if (pattern.component === "strong") {
+          parts.push(
+            <strong key={key++} className="font-semibold">
+              {match[1]}
+            </strong>
+          );
+        } else if (pattern.component === "em") {
+          parts.push(
+            <em key={key++} className="italic">
+              {match[1]}
+            </em>
+          );
+        } else if (pattern.component === "strong-link") {
           // **[text](url)** - Bold link
           const linkText = match[1];
           const linkUrl = match[2];
@@ -414,7 +509,7 @@ function parseBoldItalicLinks(text: string): React.ReactNode[] {
               </a>
             </strong>
           );
-        } else if (pattern.component === 'em-link') {
+        } else if (pattern.component === "em-link") {
           // *[text](url)* - Italic link
           const linkText = match[1];
           const linkUrl = match[2];
@@ -432,7 +527,7 @@ function parseBoldItalicLinks(text: string): React.ReactNode[] {
               </a>
             </em>
           );
-        } else if (pattern.component === 'link') {
+        } else if (pattern.component === "link") {
           // [text](url) - Regular link
           const linkText = match[1];
           const linkUrl = match[2];
