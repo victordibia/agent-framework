@@ -79,15 +79,30 @@ async def test_critical_isinstance_bug_detection(mapper: MessageMapper, test_req
 
 
 async def test_text_content_mapping(mapper: MessageMapper, test_request: AgentFrameworkRequest) -> None:
-    """Test TextContent mapping."""
+    """Test TextContent mapping with proper OpenAI event hierarchy."""
     content = create_test_content("text", text="Hello, clean test!")
     update = create_test_agent_update([content])
 
     events = await mapper.convert_event(update, test_request)
 
-    assert len(events) == 1
-    assert events[0].type == "response.output_text.delta"
-    assert events[0].delta == "Hello, clean test!"
+    # With proper OpenAI hierarchy, we expect 3 events:
+    # 1. response.output_item.added (message)
+    # 2. response.content_part.added (text part)
+    # 3. response.output_text.delta (actual text)
+    assert len(events) == 3
+
+    # Check message output item
+    assert events[0].type == "response.output_item.added"
+    assert events[0].item.type == "message"
+    assert events[0].item.role == "assistant"
+
+    # Check content part
+    assert events[1].type == "response.content_part.added"
+    assert events[1].part.type == "output_text"
+
+    # Check text delta
+    assert events[2].type == "response.output_text.delta"
+    assert events[2].delta == "Hello, clean test!"
 
 
 async def test_function_call_mapping(mapper: MessageMapper, test_request: AgentFrameworkRequest) -> None:
@@ -180,6 +195,140 @@ async def test_agent_run_response_mapping(mapper: MessageMapper, test_request: A
     text_events = [e for e in events if e.type == "response.output_text.delta"]
     assert len(text_events) > 0
     assert text_events[0].delta == "Complete response from run()"
+
+
+async def test_agent_lifecycle_events(mapper: MessageMapper, test_request: AgentFrameworkRequest) -> None:
+    """Test that agent lifecycle events are properly converted to OpenAI format."""
+    from agent_framework_devui.models._openai_custom import AgentCompletedEvent, AgentFailedEvent, AgentStartedEvent
+
+    # Test AgentStartedEvent
+    start_event = AgentStartedEvent()
+    events = await mapper.convert_event(start_event, test_request)
+
+    assert len(events) == 2  # Should emit response.created and response.in_progress
+    assert events[0].type == "response.created"
+    assert events[1].type == "response.in_progress"
+    assert events[0].response.model == "test_agent"  # Should use model from request
+    assert events[0].response.status == "in_progress"
+
+    # Test AgentCompletedEvent
+    complete_event = AgentCompletedEvent()
+    events = await mapper.convert_event(complete_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.completed"
+    assert events[0].response.status == "completed"
+
+    # Test AgentFailedEvent
+    error = Exception("Test error")
+    failed_event = AgentFailedEvent(error=error)
+    events = await mapper.convert_event(failed_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.failed"
+    assert events[0].response.status == "failed"
+    assert events[0].response.error.message == "Test error"
+    assert events[0].response.error.code == "server_error"
+
+
+@pytest.mark.skip(reason="Workflow events need real classes from agent_framework.workflows")
+async def test_workflow_lifecycle_events(mapper: MessageMapper, test_request: AgentFrameworkRequest) -> None:
+    """Test that workflow lifecycle events are properly converted to OpenAI format."""
+
+    # Create mock workflow events (since we don't have access to the real ones in tests)
+    class WorkflowStartedEvent:  # noqa: B903
+        def __init__(self, workflow_id: str):
+            self.workflow_id = workflow_id
+
+    class WorkflowCompletedEvent:  # noqa: B903
+        def __init__(self, workflow_id: str):
+            self.workflow_id = workflow_id
+
+    class WorkflowFailedEvent:  # noqa: B903
+        def __init__(self, workflow_id: str, error_info: dict | None = None):
+            self.workflow_id = workflow_id
+            self.error_info = error_info
+
+    # Test WorkflowStartedEvent
+    start_event = WorkflowStartedEvent(workflow_id="test_workflow_123")
+    events = await mapper.convert_event(start_event, test_request)
+
+    assert len(events) == 2  # Should emit response.created and response.in_progress
+    assert events[0].type == "response.created"
+    assert events[1].type == "response.in_progress"
+    assert events[0].response.model == "test_agent"  # Should use model from request
+    assert events[0].response.status == "in_progress"
+
+    # Test WorkflowCompletedEvent
+    complete_event = WorkflowCompletedEvent(workflow_id="test_workflow_123")
+    events = await mapper.convert_event(complete_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.completed"
+    assert events[0].response.status == "completed"
+
+    # Test WorkflowFailedEvent with error info
+    failed_event = WorkflowFailedEvent(workflow_id="test_workflow_123", error_info={"message": "Workflow failed"})
+    events = await mapper.convert_event(failed_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.failed"
+    assert events[0].response.status == "failed"
+    assert events[0].response.error.message == "{'message': 'Workflow failed'}"
+    assert events[0].response.error.code == "server_error"
+
+
+@pytest.mark.skip(reason="Executor events need real classes from agent_framework.workflows")
+async def test_executor_action_events(mapper: MessageMapper, test_request: AgentFrameworkRequest) -> None:
+    """Test that workflow executor events are properly converted to custom output item events."""
+
+    # Create mock executor events (since we don't have access to the real ones in tests)
+    class ExecutorInvokedEvent:  # noqa: B903
+        def __init__(self, executor_id: str, executor_type: str = "test"):
+            self.executor_id = executor_id
+            self.executor_type = executor_type
+
+    class ExecutorCompletedEvent:  # noqa: B903
+        def __init__(self, executor_id: str, result: Any = None):
+            self.executor_id = executor_id
+            self.result = result
+
+    class ExecutorFailedEvent:  # noqa: B903
+        def __init__(self, executor_id: str, error: Exception | None = None):
+            self.executor_id = executor_id
+            self.error = error
+
+    # Test ExecutorInvokedEvent
+    invoked_event = ExecutorInvokedEvent(executor_id="exec_123", executor_type="test_executor")
+    events = await mapper.convert_event(invoked_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.output_item.added"
+    assert events[0].item["type"] == "executor_action"
+    assert events[0].item["executor_id"] == "exec_123"
+    assert events[0].item["status"] == "in_progress"
+
+    # Test ExecutorCompletedEvent
+    complete_event = ExecutorCompletedEvent(executor_id="exec_123", result={"data": "success"})
+    events = await mapper.convert_event(complete_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.output_item.done"
+    assert events[0].item["type"] == "executor_action"
+    assert events[0].item["executor_id"] == "exec_123"
+    assert events[0].item["status"] == "completed"
+    assert events[0].item["result"] == {"data": "success"}
+
+    # Test ExecutorFailedEvent
+    failed_event = ExecutorFailedEvent(executor_id="exec_123", error=Exception("Executor failed"))
+    events = await mapper.convert_event(failed_event, test_request)
+
+    assert len(events) == 1
+    assert events[0].type == "response.output_item.done"
+    assert events[0].item["type"] == "executor_action"
+    assert events[0].item["executor_id"] == "exec_123"
+    assert events[0].item["status"] == "failed"
+    assert "Executor failed" in str(events[0].item["error"]["message"])
 
 
 if __name__ == "__main__":

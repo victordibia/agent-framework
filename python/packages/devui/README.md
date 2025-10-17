@@ -159,7 +159,15 @@ Given that DevUI offers an OpenAI Responses API, it internally maps messages and
 
 | Agent Framework Content         | OpenAI Event/Type                        | Status   |
 | ------------------------------- | ---------------------------------------- | -------- |
-| `TextContent`                   | `response.output_text.delta`             | Standard |
+| **Lifecycle Events**            |                                          |          |
+| `AgentStartedEvent`             | `response.created` + `response.in_progress` | Standard |
+| `AgentCompletedEvent`           | `response.completed`                     | Standard |
+| `AgentFailedEvent`              | `response.failed`                        | Standard |
+| `WorkflowStartedEvent`          | `response.created` + `response.in_progress` | Standard |
+| `WorkflowCompletedEvent`        | `response.completed`                     | Standard |
+| `WorkflowFailedEvent`           | `response.failed`                        | Standard |
+| **Content Types**               |                                          |          |
+| `TextContent`                   | `response.content_part.added` + `response.output_text.delta` | Standard |
 | `TextReasoningContent`          | `response.reasoning_text.delta`          | Standard |
 | `FunctionCallContent` (initial) | `response.output_item.added`             | Standard |
 | `FunctionCallContent` (args)    | `response.function_call_arguments.delta` | Standard |
@@ -168,7 +176,14 @@ Given that DevUI offers an OpenAI Responses API, it internally maps messages and
 | `FunctionApprovalResponseContent`| `response.function_approval.responded`  | DevUI    |
 | `ErrorContent`                  | `error`                                  | Standard |
 | `UsageContent`                  | Final `Response.usage` field (not streamed) | Standard |
-| `WorkflowEvent`                 | `response.workflow_event.complete`       | DevUI    |
+| **Workflow Events**             |                                          |          |
+| `ExecutorInvokedEvent`          | `response.output_item.added` (ExecutorActionItem) | DevUI |
+| `ExecutorCompletedEvent`        | `response.output_item.done` (ExecutorActionItem) | DevUI |
+| `ExecutorFailedEvent`           | `response.output_item.done` (ExecutorActionItem with error) | DevUI |
+| `WorkflowEvent` (other)         | `response.workflow_event.complete`       | DevUI    |
+| `WorkflowStatusEvent`           | `response.trace.complete`                | DevUI    |
+| `WorkflowWarningEvent`          | `response.trace.complete`                | DevUI    |
+| **Trace Content**               |                                          |          |
 | `DataContent`                   | `response.trace.complete`                | DevUI    |
 | `UriContent`                    | `response.trace.complete`                | DevUI    |
 | `HostedFileContent`             | `response.trace.complete`                | DevUI    |
