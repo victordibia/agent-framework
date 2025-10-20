@@ -81,11 +81,12 @@ Or use Azure AD authentication (no API key needed):
                 ? new AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential())
                 : new AzureOpenAIClient(new Uri(endpoint), new Azure.AzureKeyCredential(apiKey));
 
-            // Create weather tools
+            // Create weather tools with explicit snake_case names for OpenAI compatibility
+            // Function names must match pattern ^[a-zA-Z0-9_-]+$ per OpenAI requirements
             var weatherTools = new List<AITool>
             {
-                AIFunctionFactory.Create(WeatherTools.GetWeather),
-                AIFunctionFactory.Create(WeatherTools.GetForecast)
+                AIFunctionFactory.Create(WeatherTools.GetWeather, name: "get_weather"),
+                AIFunctionFactory.Create(WeatherTools.GetForecast, name: "get_forecast")
             };
 
             // Create the agent using the CreateAIAgent extension method with tools

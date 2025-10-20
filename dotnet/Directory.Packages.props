@@ -17,7 +17,7 @@
     <PackageVersion Include="Aspire.Microsoft.Azure.Cosmos" Version="$(AspireAppHostSdkVersion)" />
     <PackageVersion Include="Aspire.Hosting.Testing" Version="$(AspireAppHostSdkVersion)" />
     <PackageVersion Include="Azure.AI.Agents.Persistent" Version="1.2.0-beta.5" />
-    <PackageVersion Include="Azure.AI.OpenAI" Version="2.3.0-beta.2" />
+    <PackageVersion Include="Azure.AI.OpenAI" Version="2.5.0-beta.1" />
     <PackageVersion Include="Azure.Identity" Version="1.16.0" />
     <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.4.0" />
     <PackageVersion Include="CommunityToolkit.Aspire.OllamaSharp" Version="9.8.0" />
@@ -56,7 +56,7 @@
     <PackageVersion Include="Microsoft.Agents.AI.AzureAI" Version="1.0.0-preview.251001.3" />
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-preview.251001.3" />
     <PackageVersion Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.9" />
-    <PackageVersion Include="OpenAI" Version="2.4.0" />
+    <PackageVersion Include="OpenAI" Version="2.5.0" />
     <PackageVersion Include="Microsoft.Extensions.AI" Version="9.9.1" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="9.9.1" />
     <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="9.9.0-preview.1.25458.4" />

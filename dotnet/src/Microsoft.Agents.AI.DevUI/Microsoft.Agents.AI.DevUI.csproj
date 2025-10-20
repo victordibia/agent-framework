@@ -8,6 +8,8 @@
     <OutputType>Exe</OutputType>
     <NoWarn>$(NoWarn);OPENAI001;CA1720;CA2007;VSTHRD111;ASP0019;CA1724;CS1591;CA1308;RCS1211;CA1052;RCS1102;VSTHRD200;RCS1124;CA1869;CA2234;CA2201;RCS1077;RCS1155;RCS1146;CA1311;CA1862;CA1304;RCS1021;CA1860;CA1310;CA1812;CA1852;RCS1118</NoWarn>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
   <PropertyGroup>

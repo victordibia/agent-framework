@@ -25,6 +25,13 @@ public class DevUIExecutionRequest
     public JsonElement? Input { get; set; }
 
     /// <summary>
+    /// Messages array (OpenAI Chat Completion format)
+    /// Used when UI sends conversation history with tool calls/results
+    /// </summary>
+    [JsonPropertyName("messages")]
+    public List<Dictionary<string, object>>? Messages { get; set; }
+
+    /// <summary>
     /// Enable streaming responses via Server-Sent Events
     /// </summary>
     [JsonPropertyName("stream")]
@@ -172,14 +179,83 @@ public class DevUIExecutionRequest
 
     /// <summary>
     /// Convert to ChatMessage array for Agent Framework
+    /// Handles both input and messages formats
     /// </summary>
     public ChatMessage[] ToChatMessages()
     {
-        var inputStr = GetLastMessageContent();
+        // If messages array is provided (OpenAI Chat Completion format), use it
+        if (this.Messages != null && this.Messages.Count > 0)
+        {
+            var chatMessages = new List<ChatMessage>();
+
+            foreach (var msg in this.Messages)
+            {
+                // Get role (required)
+                if (!msg.TryGetValue("role", out var roleObj) || roleObj == null)
+                {
+                    continue;
+                }
+
+                var roleStr = roleObj.ToString() ?? "";
+                var role = roleStr.ToLowerInvariant() switch
+                {
+                    "user" => ChatRole.User,
+                    "assistant" => ChatRole.Assistant,
+                    "system" => ChatRole.System,
+                    "tool" => ChatRole.Tool,
+                    _ => ChatRole.User
+                };
+
+                // Get content
+                string? content = null;
+                if (msg.TryGetValue("content", out var contentObj) && contentObj != null)
+                {
+                    content = contentObj.ToString();
+                }
+
+                // Get name (for tool messages)
+                string? name = null;
+                if (msg.TryGetValue("name", out var nameObj) && nameObj != null)
+                {
+                    name = nameObj.ToString();
+                }
+
+                // Get tool_call_id (for tool response messages)
+                string? toolCallId = null;
+                if (msg.TryGetValue("tool_call_id", out var toolCallIdObj) && toolCallIdObj != null)
+                {
+                    toolCallId = toolCallIdObj.ToString();
+                }
+
+                // Create ChatMessage
+                var chatMessage = new ChatMessage(role, content ?? "");
+
+                // Add additional metadata if present
+                if (!string.IsNullOrEmpty(name))
+                {
+                    chatMessage.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                    chatMessage.AdditionalProperties["name"] = name;
+                }
+
+                if (!string.IsNullOrEmpty(toolCallId))
+                {
+                    chatMessage.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                    chatMessage.AdditionalProperties["tool_call_id"] = toolCallId;
+                }
+
+                chatMessages.Add(chatMessage);
+            }
+
+            return chatMessages.ToArray();
+        }
+
+        // Fallback to input format
+        var inputStr = this.GetLastMessageContent();
         if (!string.IsNullOrEmpty(inputStr))
         {
             return new[] { new ChatMessage(ChatRole.User, inputStr) };
         }
+
         return Array.Empty<ChatMessage>();
     }
 }

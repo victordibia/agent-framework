@@ -107,7 +107,7 @@ public class Workflow
             return null;
         }
 
-        return new Workflow<TInput>(this.StartExecutorId)
+        return new Workflow<TInput>(this.StartExecutorId, this.Name, this.Description)
         {
             Registrations = this.Registrations,
             Edges = this.Edges,
