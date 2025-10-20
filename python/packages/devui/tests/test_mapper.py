@@ -13,7 +13,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "main"))
 
 # Import Agent Framework types (assuming they are always available)
-from agent_framework._types import AgentRunResponseUpdate, ErrorContent, FunctionCallContent, Role, TextContent
+from agent_framework._types import (
+    AgentRunResponseUpdate,
+    ErrorContent,
+    FunctionCallContent,
+    FunctionResultContent,
+    Role,
+    TextContent,
+)
 
 from agent_framework_devui._mapper import MessageMapper
 from agent_framework_devui.models._openai_custom import AgentFrameworkRequest
@@ -121,6 +128,83 @@ async def test_function_call_mapping(mapper: MessageMapper, test_request: AgentF
     delta_events = [e for e in events if e.type == "response.function_call_arguments.delta"]
     full_json = "".join(event.delta for event in delta_events)
     assert "TestCity" in full_json
+
+
+async def test_function_result_content_with_string_result(
+    mapper: MessageMapper, test_request: AgentFrameworkRequest
+) -> None:
+    """Test FunctionResultContent with plain string result (regular tools)."""
+    content = FunctionResultContent(
+        call_id="test_call_123",
+        result="Hello, World!",  # Plain string like regular Python function tools
+    )
+    update = create_test_agent_update([content])
+
+    events = await mapper.convert_event(update, test_request)
+
+    # Should produce response.function_result.complete event
+    assert len(events) >= 1
+    result_events = [e for e in events if e.type == "response.function_result.complete"]
+    assert len(result_events) == 1
+    assert result_events[0].output == "Hello, World!"
+    assert result_events[0].call_id == "test_call_123"
+    assert result_events[0].status == "completed"
+
+
+async def test_function_result_content_with_nested_content_objects(
+    mapper: MessageMapper, test_request: AgentFrameworkRequest
+) -> None:
+    """Test FunctionResultContent with nested Content objects (MCP tools case).
+
+    This tests the issue from GitHub #1476 where MCP tools return FunctionResultContent
+    with nested TextContent objects that fail to serialize properly.
+    """
+    # This is what MCP tools return - result contains nested Content objects
+    content = FunctionResultContent(
+        call_id="mcp_call_456",
+        result=[TextContent(text="Hello from MCP!")],  # List containing TextContent object
+    )
+    update = create_test_agent_update([content])
+
+    events = await mapper.convert_event(update, test_request)
+
+    # Should successfully serialize the nested Content object
+    assert len(events) >= 1
+    result_events = [e for e in events if e.type == "response.function_result.complete"]
+    assert len(result_events) == 1
+
+    # The output should contain the text from the nested TextContent
+    # Should not have TypeError or empty output
+    assert result_events[0].output != ""
+    assert "Hello from MCP!" in result_events[0].output
+    assert result_events[0].call_id == "mcp_call_456"
+
+
+async def test_function_result_content_with_multiple_nested_content_objects(
+    mapper: MessageMapper, test_request: AgentFrameworkRequest
+) -> None:
+    """Test FunctionResultContent with multiple nested Content objects."""
+    # MCP tools can return multiple Content objects
+    content = FunctionResultContent(
+        call_id="mcp_call_789",
+        result=[
+            TextContent(text="First result"),
+            TextContent(text="Second result"),
+        ],
+    )
+    update = create_test_agent_update([content])
+
+    events = await mapper.convert_event(update, test_request)
+
+    assert len(events) >= 1
+    result_events = [e for e in events if e.type == "response.function_result.complete"]
+    assert len(result_events) == 1
+
+    # Should serialize all nested Content objects
+    output = result_events[0].output
+    assert output != ""
+    assert "First result" in output
+    assert "Second result" in output
 
 
 async def test_error_content_mapping(mapper: MessageMapper, test_request: AgentFrameworkRequest) -> None:

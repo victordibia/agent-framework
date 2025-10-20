@@ -56,6 +56,56 @@ EventType = Union[
 ]
 
 
+def _serialize_content_recursive(value: Any) -> Any:
+    """Recursively serialize Agent Framework Content objects to JSON-compatible values.
+
+    This handles nested Content objects (like TextContent inside FunctionResultContent.result)
+    that can't be directly serialized by json.dumps().
+
+    Args:
+        value: Value to serialize (can be Content object, dict, list, primitive, etc.)
+
+    Returns:
+        JSON-serializable version with all Content objects converted to dicts/primitives
+    """
+    # Handle None and basic JSON-serializable types
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    # Check if it's a SerializationMixin (includes all Content types)
+    # Content objects have to_dict() method
+    if hasattr(value, "to_dict") and callable(getattr(value, "to_dict", None)):
+        try:
+            return value.to_dict()
+        except Exception as e:
+            # If to_dict() fails, fall through to other methods
+            logger.debug(f"Failed to serialize with to_dict(): {e}")
+
+    # Handle dictionaries - recursively process values
+    if isinstance(value, dict):
+        return {key: _serialize_content_recursive(val) for key, val in value.items()}
+
+    # Handle lists and tuples - recursively process elements
+    if isinstance(value, (list, tuple)):
+        serialized = [_serialize_content_recursive(item) for item in value]
+        # For single-item lists containing text Content, extract just the text
+        # This handles the MCP case where result = [TextContent(text="Hello")]
+        # and we want output = "Hello" not output = '[{"type": "text", "text": "Hello"}]'
+        if len(serialized) == 1 and isinstance(serialized[0], dict) and serialized[0].get("type") == "text":
+            return serialized[0].get("text", "")
+        return serialized
+
+    # For other objects with model_dump(), try that
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump", None)):
+        try:
+            return value.model_dump()
+        except Exception as e:
+            logger.debug(f"Failed to serialize with model_dump(): {e}")
+
+    # Return as-is and let json.dumps handle it (may raise TypeError for non-serializable types)
+    return value
+
+
 class MessageMapper:
     """Maps Agent Framework messages/responses to OpenAI format."""
 
@@ -935,8 +985,16 @@ class MessageMapper:
         result = getattr(content, "result", None)
         exception = getattr(content, "exception", None)
 
-        # Convert result to string
-        output = result if isinstance(result, str) else json.dumps(result) if result is not None else ""
+        # Convert result to string, handling nested Content objects from MCP tools
+        if isinstance(result, str):
+            output = result
+        elif result is not None:
+            # Recursively serialize any nested Content objects (e.g., from MCP tools)
+            serialized = _serialize_content_recursive(result)
+            # Convert to JSON string if still not a string
+            output = serialized if isinstance(serialized, str) else json.dumps(serialized)
+        else:
+            output = ""
 
         # Determine status based on exception
         status = "incomplete" if exception else "completed"
@@ -953,6 +1011,7 @@ class MessageMapper:
             item_id=item_id,
             output_index=context["output_index"],
             sequence_number=self._next_sequence(context),
+            timestamp=datetime.now().isoformat(),
         )
 
     async def _map_error_content(self, content: Any, context: dict[str, Any]) -> ResponseErrorEvent:

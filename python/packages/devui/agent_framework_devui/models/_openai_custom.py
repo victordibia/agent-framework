@@ -121,6 +121,7 @@ class ResponseFunctionResultComplete(BaseModel):
     item_id: str
     output_index: int = 0
     sequence_number: int
+    timestamp: str | None = None  # Optional timestamp for UI display
 
 
 # Agent Framework extension fields

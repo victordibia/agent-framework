@@ -241,6 +241,7 @@ export interface ResponseFunctionResultComplete {
   item_id: string;
   output_index: number;
   sequence_number: number;
+  timestamp?: string;  // Optional ISO timestamp for UI display
 }
 
 // DevUI Extension: Turn Separator (UI-only event for grouping)
