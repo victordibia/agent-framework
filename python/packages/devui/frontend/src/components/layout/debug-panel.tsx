@@ -137,8 +137,8 @@ function processEventsForDisplay(
   for (const event of events) {
     // Skip trace events - they belong in the Traces tab only
     if (
-      event.type === "response.trace_event.complete" ||
-      event.type === "response.trace.complete"
+      event.type === "response.trace.completed" ||
+      event.type === "response.trace.completed"
     ) {
       continue;
     }
@@ -179,9 +179,9 @@ function processEventsForDisplay(
       event.type === "response.completed" ||
       event.type === "response.done" ||
       event.type === "error" ||
-      event.type === "response.workflow_event.complete" ||
-      event.type === "response.trace_event.complete" ||
-      event.type === "response.trace.complete" ||
+      event.type === "response.workflow_event.completed" ||
+      event.type === "response.trace.completed" ||
+      event.type === "response.trace.completed" ||
       isFunctionResult
     ) {
       // Flush any accumulated text before showing these events
@@ -195,8 +195,8 @@ function processEventsForDisplay(
 
       // Extract function names from trace events
       if (
-        (event.type === "response.trace_event.complete" ||
-          event.type === "response.trace.complete") &&
+        (event.type === "response.trace.completed" ||
+          event.type === "response.trace.completed") &&
         "data" in event
       ) {
         const traceData = event.data as TraceEventData;
@@ -450,15 +450,15 @@ function getEventSummary(event: ExtendedResponseStreamEvent): string {
       return "Output item added";
     }
 
-    case "response.workflow_event.complete":
+    case "response.workflow_event.completed":
       if ("data" in event && event.data) {
         const data = event.data as WorkflowEventData;
         return `Executor: ${data.executor_id || "unknown"}`;
       }
       return "Workflow event";
 
-    case "response.trace_event.complete":
-    case "response.trace.complete":
+    case "response.trace.completed":
+    case "response.trace.completed":
       if ("data" in event && event.data) {
         const data = event.data as TraceEventData;
         return `Trace: ${data.operation_name || "unknown"}`;
@@ -503,10 +503,10 @@ function getEventIcon(type: string) {
       return CheckCircle2;
     case "response.output_item.added":
       return CheckCircle2;
-    case "response.workflow_event.complete":
+    case "response.workflow_event.completed":
       return Activity;
-    case "response.trace_event.complete":
-    case "response.trace.complete":
+    case "response.trace.completed":
+    case "response.trace.completed":
       return Search;
     case "response.completed":
       return CheckCircle2;
@@ -531,10 +531,10 @@ function getEventColor(type: string) {
       return "text-green-600 dark:text-green-400";
     case "response.output_item.added":
       return "text-green-600 dark:text-green-400";
-    case "response.workflow_event.complete":
+    case "response.workflow_event.completed":
       return "text-purple-600 dark:text-purple-400";
-    case "response.trace_event.complete":
-    case "response.trace.complete":
+    case "response.trace.completed":
+    case "response.trace.completed":
       return "text-orange-600 dark:text-orange-400";
     case "response.completed":
       return "text-green-600 dark:text-green-400";
@@ -551,7 +551,12 @@ function EventItem({ event }: EventItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const Icon = getEventIcon(event.type);
   const colorClass = getEventColor(event.type);
-  const timestamp = new Date().toLocaleTimeString();
+
+  // Use stored UI timestamp if available, otherwise compute from event data
+  const timestamp = ('_uiTimestamp' in event && typeof event._uiTimestamp === 'number')
+    ? new Date(event._uiTimestamp * 1000).toLocaleTimeString()
+    : new Date().toLocaleTimeString();
+
   const summary = getEventSummary(event);
 
   // Determine if this event has expandable content
@@ -562,13 +567,13 @@ function EventItem({ event }: EventItemProps) {
     event.type === "response.function_result.complete" ||
     (event.type === "response.output_item.added" &&
       getFunctionResultFromEvent(event) !== null) ||
-    (event.type === "response.workflow_event.complete" &&
+    (event.type === "response.workflow_event.completed" &&
       "data" in event &&
       event.data) ||
-    (event.type === "response.trace_event.complete" &&
+    (event.type === "response.trace.completed" &&
       "data" in event &&
       event.data) ||
-    (event.type === "response.trace.complete" &&
+    (event.type === "response.trace.completed" &&
       "data" in event &&
       event.data) ||
     (event.type === "response.output_text.delta" &&
@@ -826,7 +831,7 @@ function EventExpandedContent({
       break;
     }
 
-    case "response.workflow_event.complete":
+    case "response.workflow_event.completed":
       if ("data" in event && event.data) {
         const data = event.data as WorkflowEventData;
         return (
@@ -882,8 +887,8 @@ function EventExpandedContent({
       }
       break;
 
-    case "response.trace_event.complete":
-    case "response.trace.complete":
+    case "response.trace.completed":
+    case "response.trace.completed":
       if ("data" in event && event.data) {
         const data = event.data as TraceEventData;
         return (
@@ -1160,8 +1165,8 @@ function TracesTab({ events }: { events: ExtendedResponseStreamEvent[] }) {
   // ONLY show actual trace events - handle both event type formats
   const traceEvents = events.filter(
     (e) =>
-      e.type === "response.trace_event.complete" ||
-      e.type === "response.trace.complete"
+      e.type === "response.trace.completed" ||
+      e.type === "response.trace.completed"
   );
 
   // Add separators between message rounds
@@ -1220,8 +1225,8 @@ function TraceEventItem({ event }: { event: ExtendedResponseStreamEvent }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (
-    (event.type !== "response.trace_event.complete" &&
-      event.type !== "response.trace.complete") ||
+    (event.type !== "response.trace.completed" &&
+      event.type !== "response.trace.completed") ||
     !("data" in event)
   ) {
     return (
@@ -1233,14 +1238,19 @@ function TraceEventItem({ event }: { event: ExtendedResponseStreamEvent }) {
 
   const data = event.data as TraceEventData;
 
-  // Use actual trace timestamp if available, fallback to current time
-  let timestamp = new Date().toLocaleTimeString();
-  if (data.end_time) {
+  // Use stored UI timestamp first, then trace timestamps, then fallback to current time
+  let timestamp: string;
+  if ('_uiTimestamp' in event && typeof event._uiTimestamp === 'number') {
+    // Use stored UI timestamp from when event was received
+    timestamp = new Date(event._uiTimestamp * 1000).toLocaleTimeString();
+  } else if (data.end_time) {
     timestamp = new Date(data.end_time * 1000).toLocaleTimeString();
   } else if (data.start_time) {
     timestamp = new Date(data.start_time * 1000).toLocaleTimeString();
   } else if (data.timestamp) {
     timestamp = new Date(data.timestamp).toLocaleTimeString();
+  } else {
+    timestamp = new Date().toLocaleTimeString();
   }
 
   const operationName = data.operation_name || "Unknown Operation";
@@ -1487,7 +1497,10 @@ function ToolsTab({ events }: { events: ExtendedResponseStreamEvent[] }) {
 }
 
 function ToolEventItem({ event }: { event: ExtendedResponseStreamEvent }) {
-  const timestamp = new Date().toLocaleTimeString();
+  // Use stored UI timestamp if available, otherwise compute from current time
+  const timestamp = ('_uiTimestamp' in event && typeof event._uiTimestamp === 'number')
+    ? new Date(event._uiTimestamp * 1000).toLocaleTimeString()
+    : new Date().toLocaleTimeString();
 
   // Check if this is a function call or result event
   const isFunctionCall = event.type === "response.function_call.complete";

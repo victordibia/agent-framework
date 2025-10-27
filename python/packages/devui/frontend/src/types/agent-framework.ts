@@ -85,7 +85,14 @@ export interface AgentFrameworkRequest {
   metadata?: Record<string, unknown>;
   temperature?: number;
   max_output_tokens?: number;
+  top_p?: number;
   tools?: Record<string, unknown>[];
+
+  // Reasoning parameters (for o-series models)
+  reasoning?: {
+    effort?: "minimal" | "low" | "medium" | "high";
+    summary?: "auto" | "concise" | "detailed";
+  };
 
   // Agent Framework extension - strongly typed
   extra_body?: AgentFrameworkExtraBody;

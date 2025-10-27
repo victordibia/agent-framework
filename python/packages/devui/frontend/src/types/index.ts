@@ -91,6 +91,21 @@ export interface RunWorkflowRequest {
   conversation_id?: string;
 }
 
+// OpenAI Proxy Mode Configuration
+export interface OAIProxyMode {
+  enabled: boolean;
+  model: string; // Model ID like "gpt-4o", "gpt-4o-mini", or custom
+
+  // Optional OpenAI Responses API parameters
+  temperature?: number;
+  max_output_tokens?: number;
+  top_p?: number;
+  instructions?: string;
+
+  // Reasoning parameters (for o-series models)
+  reasoning_effort?: "minimal" | "low" | "medium" | "high";
+}
+
 // Legacy types - DEPRECATED - use new structured events from openai.ts instead
 
 // Re-export OpenAI types

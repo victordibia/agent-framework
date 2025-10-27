@@ -317,7 +317,7 @@ export function processWorkflowEvents(
 
   events.forEach((event) => {
     if (
-      event.type === "response.workflow_event.complete" &&
+      event.type === "response.workflow_event.completed" &&
       "data" in event &&
       event.data
     ) {
@@ -418,7 +418,7 @@ export function getCurrentlyExecutingExecutors(
   // Process events to find the most recent event for each executor
   events.forEach((event) => {
     if (
-      event.type === "response.workflow_event.complete" &&
+      event.type === "response.workflow_event.completed" &&
       "data" in event &&
       event.data
     ) {
@@ -465,7 +465,7 @@ export function updateEdgesWithSequenceAnalysis(
 
   events.forEach((event) => {
     if (
-      event.type === "response.workflow_event.complete" &&
+      event.type === "response.workflow_event.completed" &&
       "data" in event &&
       event.data
     ) {

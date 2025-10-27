@@ -11,6 +11,7 @@ import type {
   ExtendedResponseStreamEvent,
   Conversation,
   PendingApproval,
+  OAIProxyMode,
 } from "@/types";
 import type { ConversationItem } from "@/types/openai";
 import type { AttachmentItem } from "@/components/ui/attachment-gallery";
@@ -53,6 +54,9 @@ interface DevUIState {
   showGallery: boolean;
   showDeployModal: boolean;
   showEntityNotFoundToast: boolean;
+
+  // OpenAI Proxy Mode Slice
+  oaiMode: OAIProxyMode;
 }
 
 // ========================================
@@ -96,6 +100,10 @@ interface DevUIActions {
   setShowGallery: (show: boolean) => void;
   setShowDeployModal: (show: boolean) => void;
   setShowEntityNotFoundToast: (show: boolean) => void;
+
+  // OpenAI Proxy Mode Actions
+  setOAIMode: (config: OAIProxyMode) => void;
+  toggleOAIMode: () => void;
 
   // Combined Actions (handle multiple state updates + side effects)
   selectEntity: (entity: AgentInfo | WorkflowInfo) => void;
@@ -145,6 +153,12 @@ export const useDevUIStore = create<DevUIStore>()(
         showGallery: false,
         showDeployModal: false,
         showEntityNotFoundToast: false,
+
+        // OpenAI Proxy Mode State
+        oaiMode: {
+          enabled: false,
+          model: "gpt-4o-mini", // Default to cheaper model
+        },
 
         // ========================================
         // Entity Actions
@@ -223,7 +237,19 @@ export const useDevUIStore = create<DevUIStore>()(
         setShowDebugPanel: (show) => set({ showDebugPanel: show }),
         setDebugPanelWidth: (width) => set({ debugPanelWidth: width }),
         addDebugEvent: (event) =>
-          set((state) => ({ debugEvents: [...state.debugEvents, event] })),
+          set((state) => ({
+            debugEvents: [
+              ...state.debugEvents,
+              {
+                ...event,
+                // Add UI display timestamp when event is received (Unix seconds)
+                // This ensures timestamp stays fixed across re-renders
+                _uiTimestamp: ('created_at' in event && event.created_at)
+                  ? event.created_at
+                  : Math.floor(Date.now() / 1000),
+              } as ExtendedResponseStreamEvent & { _uiTimestamp: number },
+            ],
+          })),
         clearDebugEvents: () => set({ debugEvents: [] }),
         setIsResizing: (resizing) => set({ isResizing: resizing }),
 
@@ -236,6 +262,83 @@ export const useDevUIStore = create<DevUIStore>()(
         setShowDeployModal: (show) => set({ showDeployModal: show }),
         setShowEntityNotFoundToast: (show) =>
           set({ showEntityNotFoundToast: show }),
+
+        // ========================================
+        // OpenAI Proxy Mode Actions
+        // ========================================
+
+        setOAIMode: (config) =>
+          set((state) => {
+            // If enabling OAI mode, clear conversation state
+            if (config.enabled && !state.oaiMode.enabled) {
+              // Clear ALL conversation localStorage caches
+              Object.keys(localStorage).forEach(key => {
+                if (key.startsWith('devui_convs_')) {
+                  localStorage.removeItem(key);
+                }
+              });
+
+              return {
+                oaiMode: config,
+                // Clear conversation state when switching to OAI mode
+                currentConversation: undefined,
+                availableConversations: [],
+                chatItems: [],
+                inputValue: "",
+                attachments: [],
+                conversationUsage: { total_tokens: 0, message_count: 0 },
+                isStreaming: false,
+                isSubmitting: false,
+                pendingApprovals: [],
+                debugEvents: [],
+              };
+            }
+            // If disabling OAI mode, also clear state
+            if (!config.enabled && state.oaiMode.enabled) {
+              // Clear ALL conversation localStorage caches
+              Object.keys(localStorage).forEach(key => {
+                if (key.startsWith('devui_convs_')) {
+                  localStorage.removeItem(key);
+                }
+              });
+
+              return {
+                oaiMode: config,
+                // Clear conversation state when switching back to local mode
+                currentConversation: undefined,
+                availableConversations: [],
+                chatItems: [],
+                inputValue: "",
+                attachments: [],
+                conversationUsage: { total_tokens: 0, message_count: 0 },
+                isStreaming: false,
+                isSubmitting: false,
+                pendingApprovals: [],
+                debugEvents: [],
+              };
+            }
+            // Just update config (model, temperature, etc.) without clearing state
+            return { oaiMode: config };
+          }),
+
+        toggleOAIMode: () =>
+          set((state) => {
+            const newEnabled = !state.oaiMode.enabled;
+            return {
+              oaiMode: { ...state.oaiMode, enabled: newEnabled },
+              // Clear conversation state when toggling
+              currentConversation: undefined,
+              availableConversations: [],
+              chatItems: [],
+              inputValue: "",
+              attachments: [],
+              conversationUsage: { total_tokens: 0, message_count: 0 },
+              isStreaming: false,
+              isSubmitting: false,
+              pendingApprovals: [],
+              debugEvents: [],
+            };
+          }),
 
         // ========================================
         // Combined Actions
@@ -277,6 +380,7 @@ export const useDevUIStore = create<DevUIStore>()(
         partialize: (state) => ({
           showDebugPanel: state.showDebugPanel,
           debugPanelWidth: state.debugPanelWidth,
+          oaiMode: state.oaiMode, // Persist OpenAI proxy mode settings
         }),
       }
     ),

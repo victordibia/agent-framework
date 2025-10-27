@@ -14,6 +14,7 @@ from agent_framework import (
     Role,
     chat_middleware,
     function_middleware,
+    ai_function
 )
 from agent_framework.azure import AzureOpenAIChatClient
 
@@ -93,6 +94,14 @@ def get_forecast(
 
     return f"Weather forecast for {location}:\n" + "\n".join(forecast)
 
+@ai_function(approval_mode="always_require")
+def send_email(
+    recipient: Annotated[str, "The email address of the recipient."],
+    subject: Annotated[str, "The subject of the email."],
+    body: Annotated[str, "The body content of the email."],
+) -> str:
+    """Simulate sending an email."""
+    return f"Email sent to {recipient} with subject '{subject}'."
 
 # Agent instance following Agent Framework conventions
 agent = ChatAgent(
@@ -106,7 +115,7 @@ agent = ChatAgent(
     chat_client=AzureOpenAIChatClient(
         api_key=os.environ.get("AZURE_OPENAI_API_KEY", ""),
     ),
-    tools=[get_weather, get_forecast],
+    tools=[get_weather, get_forecast, send_email],
     middleware=[security_filter_middleware, atlantis_location_filter_middleware],
 )
 

@@ -27,6 +27,9 @@ export default function App() {
   const isLoadingEntities = useDevUIStore((state) => state.isLoadingEntities);
   const entityError = useDevUIStore((state) => state.entityError);
 
+  // OpenAI proxy mode
+  const oaiMode = useDevUIStore((state) => state.oaiMode);
+
   // Entity actions
   const setAgents = useDevUIStore((state) => state.setAgents);
   const setWorkflows = useDevUIStore((state) => state.setWorkflows);
@@ -149,6 +152,17 @@ export default function App() {
 
     loadData();
   }, [setAgents, setWorkflows, selectEntity, updateAgent, updateWorkflow, setIsLoadingEntities, setEntityError, setShowEntityNotFoundToast]);
+
+  // Auto-switch from workflow to agent when OpenAI proxy mode is enabled
+  useEffect(() => {
+    if (oaiMode.enabled && selectedAgent?.type === "workflow") {
+      // Workflows don't work with OpenAI proxy - switch to first available agent
+      const firstAgent = agents[0];
+      if (firstAgent) {
+        selectEntity(firstAgent);
+      }
+    }
+  }, [oaiMode.enabled, selectedAgent, agents, selectEntity]);
 
   // Handle resize drag
   const handleMouseDown = useCallback(

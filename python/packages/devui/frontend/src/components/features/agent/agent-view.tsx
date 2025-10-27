@@ -160,7 +160,12 @@ function ConversationItemBubble({ item }: ConversationItemBubbleProps) {
           </div>
 
           <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
-            <span>{new Date().toLocaleTimeString()}</span>
+            <span>
+              {item.created_at
+                ? new Date(item.created_at * 1000).toLocaleTimeString()
+                : new Date().toLocaleTimeString() // Fallback for legacy items without timestamp
+              }
+            </span>
             {!isUser && item.usage && (
               <>
                 <span>•</span>
@@ -813,6 +818,9 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
         }
       }
 
+      // Capture timestamp once for both user and assistant messages
+      const messageTimestamp = Math.floor(Date.now() / 1000); // Unix seconds
+
       // Add user message to UI state (OpenAI ConversationMessage)
       const userMessage: import("@/types/openai").ConversationMessage = {
         id: `user-${Date.now()}`,
@@ -820,6 +828,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
         role: "user",
         content: messageContent,
         status: "completed",
+        created_at: messageTimestamp,
       };
 
       setChatItems([...useDevUIStore.getState().chatItems, userMessage]);
@@ -832,6 +841,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
         role: "assistant",
         content: [], // Will be filled during streaming
         status: "in_progress",
+        created_at: messageTimestamp,
       };
 
       setChatItems([...useDevUIStore.getState().chatItems, assistantMessage]);
@@ -937,6 +947,57 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
             return; // Exit stream processing early on error
           }
 
+          // Handle output item added events (images, files, data)
+          if (openAIEvent.type === "response.output_item.added") {
+            const outputItemEvent = openAIEvent as import("@/types/openai").ResponseOutputItemAddedEvent;
+            const item = outputItemEvent.item;
+
+            // Add output items to assistant message content
+            const currentItems = useDevUIStore.getState().chatItems;
+            setChatItems(currentItems.map((chatItem) => {
+              if (chatItem.id === assistantMessage.id && chatItem.type === "message") {
+                const existingContent = chatItem.content;
+                let newContent: import("@/types/openai").MessageContent | null = null;
+
+                // Map output items to message content
+                if (item.type === "output_image") {
+                  newContent = {
+                    type: "output_image",
+                    image_url: item.image_url,
+                    alt_text: item.alt_text,
+                    mime_type: item.mime_type,
+                  } as import("@/types/openai").MessageOutputImage;
+                } else if (item.type === "output_file") {
+                  newContent = {
+                    type: "output_file",
+                    filename: item.filename,
+                    file_url: item.file_url,
+                    file_data: item.file_data,
+                    mime_type: item.mime_type,
+                  } as import("@/types/openai").MessageOutputFile;
+                } else if (item.type === "output_data") {
+                  newContent = {
+                    type: "output_data",
+                    data: item.data,
+                    mime_type: item.mime_type,
+                    description: item.description,
+                  } as import("@/types/openai").MessageOutputData;
+                }
+
+                // If we created new content, append it
+                if (newContent) {
+                  return {
+                    ...chatItem,
+                    content: [...existingContent, newContent],
+                    status: "in_progress" as const,
+                  };
+                }
+              }
+              return chatItem;
+            }));
+            continue; // Continue to next event
+          }
+
           // Handle text delta events for chat
           if (
             openAIEvent.type === "response.output_text.delta" &&
@@ -946,21 +1007,26 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
             accumulatedText.current += openAIEvent.delta;
 
             // Update assistant message with accumulated content
+            // Preserve any existing non-text content (images, files, data)
             const currentItems = useDevUIStore.getState().chatItems;
-            setChatItems(currentItems.map((item) =>
-              item.id === assistantMessage.id && item.type === "message"
-                ? {
-                    ...item,
-                    content: [
-                      {
-                        type: "text",
-                        text: accumulatedText.current,
-                      } as import("@/types/openai").MessageTextContent,
-                    ],
-                    status: "in_progress" as const,
-                  }
-                : item
-            ));
+            setChatItems(currentItems.map((item) => {
+              if (item.id === assistantMessage.id && item.type === "message") {
+                // Keep existing non-text content, update text content
+                const existingNonTextContent = item.content.filter(c => c.type !== "text");
+                return {
+                  ...item,
+                  content: [
+                    ...existingNonTextContent,
+                    {
+                      type: "text",
+                      text: accumulatedText.current,
+                    } as import("@/types/openai").MessageTextContent,
+                  ],
+                  status: "in_progress" as const,
+                };
+              }
+              return item;
+            }));
           }
 
           // Handle completion/error by detecting when streaming stops

@@ -214,10 +214,23 @@ class ApiClient {
   async createConversation(
     metadata?: Record<string, string>
   ): Promise<Conversation> {
+    // Check if OAI proxy mode is enabled
+    const { oaiMode } = await import("@/stores").then((m) => ({
+      oaiMode: m.useDevUIStore.getState().oaiMode,
+    }));
+
+    const headers: Record<string, string> = {};
+
+    // Add proxy mode header if enabled
+    if (oaiMode.enabled) {
+      headers["X-Proxy-Backend"] = "openai";
+    }
+
     const response = await this.request<ConversationApiResponse>(
       "/v1/conversations",
       {
         method: "POST",
+        headers,
         body: JSON.stringify({ metadata }),
       }
     );
@@ -318,12 +331,45 @@ class ApiClient {
     openAIRequest: AgentFrameworkRequest
   ): AsyncGenerator<ExtendedResponseStreamEvent, void, unknown> {
 
+    // Check if OpenAI proxy mode is enabled
+    const { oaiMode } = await import("@/stores").then((m) => ({
+      oaiMode: m.useDevUIStore.getState().oaiMode,
+    }));
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    };
+
+    // If OAI mode enabled, add proxy header and merge params
+    if (oaiMode.enabled) {
+      headers["X-Proxy-Backend"] = "openai";
+
+      // Override model with OAI model
+      openAIRequest.model = oaiMode.model;
+
+      // Merge optional OpenAI parameters
+      if (oaiMode.temperature !== undefined) {
+        openAIRequest.temperature = oaiMode.temperature;
+      }
+      if (oaiMode.max_output_tokens !== undefined) {
+        openAIRequest.max_output_tokens = oaiMode.max_output_tokens;
+      }
+      if (oaiMode.top_p !== undefined) {
+        openAIRequest.top_p = oaiMode.top_p;
+      }
+      if (oaiMode.instructions !== undefined) {
+        openAIRequest.instructions = oaiMode.instructions;
+      }
+      // Reasoning parameters (for o-series models)
+      if (oaiMode.reasoning_effort !== undefined) {
+        openAIRequest.reasoning = { effort: oaiMode.reasoning_effort };
+      }
+    }
+
     const response = await fetch(`${this.baseUrl}/v1/responses`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
+      headers,
       body: JSON.stringify(openAIRequest),
     });
 

@@ -411,7 +411,7 @@ export function WorkflowView({
   // Extract workflow events from OpenAI events for executor tracking
   const workflowEvents = useMemo(() => {
     return openAIEvents.filter(
-      (event) => event.type === "response.workflow_event.complete"
+      (event) => event.type === "response.workflow_event.completed"
     );
   }, [openAIEvents]);
 
@@ -527,7 +527,7 @@ export function WorkflowView({
         for await (const openAIEvent of streamGenerator) {
           // Only store workflow events in state for performance
           // Text deltas are processed directly without state updates
-          if (openAIEvent.type === "response.workflow_event.complete") {
+          if (openAIEvent.type === "response.workflow_event.completed") {
             setOpenAIEvents((prev) => [...prev, openAIEvent]);
           }
 
@@ -536,7 +536,7 @@ export function WorkflowView({
 
           // Handle workflow events to track current executor
           if (
-            openAIEvent.type === "response.workflow_event.complete" &&
+            openAIEvent.type === "response.workflow_event.completed" &&
             "data" in openAIEvent &&
             openAIEvent.data
           ) {
@@ -599,14 +599,15 @@ export function WorkflowView({
               // Update display based on what should be shown
               if (
                 selectedExecutor &&
-                executorOutputs.current[selectedExecutor.executorId]
+                executorOutputs.current[selectedExecutor.executorId] &&
+                selectedExecutor.executorId !== executorId
               ) {
-                // If user has selected an executor, show that executor's output
+                // If user has selected a different executor, show that executor's output
                 setWorkflowResult(
                   executorOutputs.current[selectedExecutor.executorId]
                 );
               } else {
-                // Otherwise show current streaming executor's output
+                // Otherwise show current executor's output (default behavior)
                 setWorkflowResult(executorOutputs.current[executorId]);
               }
             }
@@ -753,7 +754,7 @@ export function WorkflowView({
           {selectedExecutor ||
           activeExecutors.length > 0 ||
           executorHistory.length > 0 ||
-          workflowResult ||
+          workflowResult.length > 0 ||
           workflowError ? (
             <>
               {/* Current/Last Executor Panel */}
@@ -951,7 +952,7 @@ export function WorkflowView({
               )}
 
               {/* Output Panel - displays workflow execution results and streaming output */}
-              {workflowResult &&
+              {workflowResult.length > 0 &&
                 (() => {
                   // Determine the panel state and styling
                   const isStreamingState =

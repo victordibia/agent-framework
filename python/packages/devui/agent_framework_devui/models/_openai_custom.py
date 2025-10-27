@@ -16,9 +16,16 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ResponseWorkflowEventComplete(BaseModel):
-    """Complete workflow event data."""
+    """Complete workflow event data.
 
-    type: Literal["response.workflow_event.complete"] = "response.workflow_event.complete"
+    DevUI extension for workflow execution events (debugging/observability).
+    Uses past-tense 'completed' to follow OpenAI's event naming pattern.
+
+    Workflow events are shown in the debug panel for monitoring execution flow,
+    not in main chat. Use response.output_item.added for user-facing content.
+    """
+
+    type: Literal["response.workflow_event.completed"] = "response.workflow_event.completed"
     data: dict[str, Any]  # Complete event data, not delta
     executor_id: str | None = None
     item_id: str
@@ -27,9 +34,17 @@ class ResponseWorkflowEventComplete(BaseModel):
 
 
 class ResponseTraceEventComplete(BaseModel):
-    """Complete trace event data."""
+    """Complete trace event data.
 
-    type: Literal["response.trace.complete"] = "response.trace.complete"
+    DevUI extension for non-displayable debugging/metadata events.
+    Uses past-tense 'completed' to follow OpenAI's event naming pattern
+    (e.g., response.completed, response.output_item.added).
+
+    Trace events are shown in the Traces debug panel, not in main chat.
+    Use response.output_item.added for user-facing content.
+    """
+
+    type: Literal["response.trace.completed"] = "response.trace.completed"
     data: dict[str, Any]  # Complete trace data, not delta
     span_id: str | None = None
     item_id: str
@@ -57,6 +72,94 @@ class ResponseFunctionResultComplete(BaseModel):
     item_id: str
     output_index: int = 0
     sequence_number: int
+
+
+# DevUI Output Content Types - for agent-generated media/data
+# These extend ResponseOutputItem to support rich content outputs that OpenAI's API doesn't natively support
+
+
+class ResponseOutputImage(BaseModel):
+    """DevUI extension: Agent-generated image output.
+
+    This is a DevUI extension because:
+    - OpenAI Responses API only supports text output in ResponseOutputMessage.content
+    - ImageGenerationCall exists but is for tool calls (generating images), not returning existing images
+    - Agent Framework agents can return images via DataContent/UriContent that need proper display
+
+    This type allows images to be displayed inline in chat rather than hidden in trace logs.
+    """
+
+    id: str
+    """The unique ID of the image output."""
+
+    image_url: str
+    """The URL or data URI of the image (e.g., data:image/png;base64,...)"""
+
+    type: Literal["output_image"] = "output_image"
+    """The type of the output. Always `output_image`."""
+
+    alt_text: str | None = None
+    """Optional alt text for accessibility."""
+
+    mime_type: str = "image/png"
+    """The MIME type of the image (e.g., image/png, image/jpeg)."""
+
+
+class ResponseOutputFile(BaseModel):
+    """DevUI extension: Agent-generated file output.
+
+    This is a DevUI extension because:
+    - OpenAI Responses API only supports text output in ResponseOutputMessage.content
+    - Agent Framework agents can return files via DataContent/UriContent that need proper display
+    - Supports PDFs, audio files, and other media types
+
+    This type allows files to be displayed inline in chat with appropriate renderers.
+    """
+
+    id: str
+    """The unique ID of the file output."""
+
+    filename: str
+    """The filename (used to determine rendering and download)."""
+
+    type: Literal["output_file"] = "output_file"
+    """The type of the output. Always `output_file`."""
+
+    file_url: str | None = None
+    """Optional URL to the file."""
+
+    file_data: str | None = None
+    """Optional base64-encoded file data."""
+
+    mime_type: str = "application/octet-stream"
+    """The MIME type of the file (e.g., application/pdf, audio/mp3)."""
+
+
+class ResponseOutputData(BaseModel):
+    """DevUI extension: Agent-generated generic data output.
+
+    This is a DevUI extension because:
+    - OpenAI Responses API only supports text output in ResponseOutputMessage.content
+    - Agent Framework agents can return arbitrary structured data that needs display
+    - Useful for debugging and displaying non-text content
+
+    This type allows generic data to be displayed inline in chat.
+    """
+
+    id: str
+    """The unique ID of the data output."""
+
+    data: str
+    """The data payload (string representation)."""
+
+    type: Literal["output_data"] = "output_data"
+    """The type of the output. Always `output_data`."""
+
+    mime_type: str
+    """The MIME type of the data."""
+
+    description: str | None = None
+    """Optional description of the data."""
 
 
 # Agent Framework extension fields
@@ -91,7 +194,11 @@ class AgentFrameworkRequest(BaseModel):
     metadata: dict[str, Any] | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
+    top_p: float | None = None
     tools: list[dict[str, Any]] | None = None
+
+    # Reasoning parameters (for o-series models)
+    reasoning: dict[str, Any] | None = None  # {"effort": "low" | "medium" | "high" | "minimal"}
 
     # Optional extra_body for advanced use cases
     extra_body: dict[str, Any] | None = None
@@ -158,6 +265,9 @@ __all__ = [
     "AgentFrameworkRequest",
     "OpenAIError",
     "ResponseFunctionResultComplete",
+    "ResponseOutputData",
+    "ResponseOutputFile",
+    "ResponseOutputImage",
     "ResponseTraceEvent",
     "ResponseTraceEventComplete",
     "ResponseWorkflowEventComplete",

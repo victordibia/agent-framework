@@ -137,6 +137,22 @@ response2 = client.responses.create(
 
 **How it works:** DevUI automatically retrieves the conversation's message history from the stored thread and passes it to the agent. You don't need to manually manage message history - just provide the same `conversation` ID for follow-up requests.
 
+### OpenAI Proxy Mode
+
+DevUI provides an **OpenAI Proxy** feature for testing OpenAI models directly through the interface without creating custom agents. Enable via Settings → OpenAI Proxy tab.
+
+**How it works:** The UI sends requests to the DevUI backend (with `X-Proxy-Backend: openai` header), which then proxies them to OpenAI's Responses API (and Conversations API for multi-turn chats). This proxy approach keeps your `OPENAI_API_KEY` secure on the server—never exposed in the browser or client-side code.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "X-Proxy-Backend: openai" \
+  -d '{"model": "gpt-4.1-mini", "input": "Hello"}'
+```
+
+**Note:** Requires `OPENAI_API_KEY` environment variable configured on the backend.
+
 ## CLI Options
 
 ```bash
@@ -157,42 +173,69 @@ Options:
 
 Given that DevUI offers an OpenAI Responses API, it internally maps messages and events from Agent Framework to OpenAI Responses API events (in `_mapper.py`). For transparency, this mapping is shown below:
 
-| Agent Framework Content         | OpenAI Event/Type                        | Status   |
-| ------------------------------- | ---------------------------------------- | -------- |
-| `TextContent`                   | `response.output_text.delta`             | Standard |
-| `TextReasoningContent`          | `response.reasoning_text.delta`          | Standard |
-| `FunctionCallContent` (initial) | `response.output_item.added`             | Standard |
-| `FunctionCallContent` (args)    | `response.function_call_arguments.delta` | Standard |
-| `FunctionResultContent`         | `response.function_result.complete`      | DevUI    |
-| `FunctionApprovalRequestContent`| `response.function_approval.requested`   | DevUI    |
-| `FunctionApprovalResponseContent`| `response.function_approval.responded`  | DevUI    |
-| `ErrorContent`                  | `error`                                  | Standard |
-| `UsageContent`                  | Final `Response.usage` field (not streamed) | Standard |
-| `WorkflowEvent`                 | `response.workflow_event.complete`       | DevUI    |
-| `DataContent`                   | `response.trace.complete`                | DevUI    |
-| `UriContent`                    | `response.trace.complete`                | DevUI    |
-| `HostedFileContent`             | `response.trace.complete`                | DevUI    |
-| `HostedVectorStoreContent`      | `response.trace.complete`                | DevUI    |
+### User-Facing Content (Displayed Inline in Chat)
+
+| Agent Framework Content         | OpenAI Event/Type                        | Display  | Status   |
+| ------------------------------- | ---------------------------------------- | -------- | -------- |
+| `TextContent`                   | `response.output_text.delta`             | ✅ Chat  | Standard |
+| `TextReasoningContent`          | `response.reasoning_text.delta`          | ✅ Chat  | Standard |
+| `FunctionCallContent` (initial) | `response.output_item.added`             | ✅ Chat  | Standard |
+| `FunctionCallContent` (args)    | `response.function_call_arguments.delta` | ✅ Chat  | Standard |
+| `FunctionResultContent`         | `response.function_result.complete`      | ✅ Chat  | DevUI    |
+| `FunctionApprovalRequestContent`| `response.function_approval.requested`   | ✅ Chat  | DevUI    |
+| `FunctionApprovalResponseContent`| `response.function_approval.responded`  | ✅ Chat  | DevUI    |
+| **`DataContent` (images)**      | **`response.output_item.added` (ResponseOutputImage)** | **✅ Chat** | **DevUI** |
+| **`DataContent` (files)**       | **`response.output_item.added` (ResponseOutputFile)**  | **✅ Chat** | **DevUI** |
+| **`DataContent` (other)**       | **`response.output_item.added` (ResponseOutputData)**  | **✅ Chat** | **DevUI** |
+| **`UriContent` (images/files)** | **`response.output_item.added` (ResponseOutputImage/File)** | **✅ Chat** | **DevUI** |
+| `ErrorContent`                  | `error`                                  | ✅ Chat  | Standard |
+| `UsageContent`                  | Final `Response.usage` field (not streamed) | ✅ Chat | Standard |
+
+### Debugging/Observability Events (Traces Tab Only)
+
+| Agent Framework Content         | OpenAI Event/Type                        | Display  | Status   |
+| ------------------------------- | ---------------------------------------- | -------- | -------- |
+| `WorkflowEvent`                 | `response.workflow_event.completed`      | 🔍 Traces | DevUI    |
+| OpenTelemetry Spans             | `response.trace.completed`               | 🔍 Traces | DevUI    |
+| `DataContent` (errors/no data)  | `response.trace.completed`               | 🔍 Traces | DevUI    |
+| `UriContent` (unsupported MIME) | `response.trace.completed`               | 🔍 Traces | DevUI    |
+| `HostedFileContent`             | `response.trace.completed`               | 🔍 Traces | DevUI    |
+| `HostedVectorStoreContent`      | `response.trace.completed`               | 🔍 Traces | DevUI    |
 
 - **Standard** = OpenAI Responses API spec
-- **DevUI** = Custom extensions for Agent Framework features (workflows, traces, function approvals)
+- **DevUI** = Custom extensions for Agent Framework features
+- **✅ Chat** = Displayed inline in main chat UI
+- **🔍 Traces** = Displayed only in debug/traces panel
 
 ### OpenAI Responses API Compliance
 
 DevUI follows the OpenAI Responses API specification for maximum compatibility:
 
-**Standard OpenAI Types Used:**
-- `ResponseOutputItemAddedEvent` - Output item notifications (function calls and results)
+**Standard OpenAI Events Used:**
+- `response.output_text.delta` - Text streaming
+- `response.output_item.added` - Output items (function calls, **images, files, data**)
+- `response.function_call_arguments.delta` - Function call arguments streaming
+- `error` - Error events
 - `Response.usage` - Token usage (in final response, not streamed)
-- All standard text, reasoning, and function call events
 
-**Custom DevUI Extensions:**
-- `response.function_approval.requested` - Function approval requests (for interactive approval workflows)
-- `response.function_approval.responded` - Function approval responses (user approval/rejection)
-- `response.workflow_event.complete` - Agent Framework workflow events
-- `response.trace.complete` - Execution traces and internal content (DataContent, UriContent, hosted files/stores)
+**Custom DevUI Extensions (Clearly Namespaced):**
+- `response.output_item.added` with custom item types:
+  - `ResponseOutputImage` - Agent-generated images (inline display)
+  - `ResponseOutputFile` - Agent-generated files (inline display)
+  - `ResponseOutputData` - Agent-generated structured data (inline display)
+- `response.function_approval.requested` - Interactive function approval requests
+- `response.function_approval.responded` - Function approval responses
+- `response.function_result.complete` - Server-side function execution results
+- `response.workflow_event.completed` - Workflow execution events (debugging)
+- `response.trace.completed` - Execution traces and metadata (debugging)
 
-These custom extensions are clearly namespaced and can be safely ignored by standard OpenAI clients.
+**Event Naming Convention:**
+All event types use **past-tense verbs** following OpenAI's pattern:
+- ✅ `completed`, `added`, `done` (like OpenAI)
+- ❌ NOT `complete`, `add`, `do`
+
+**Backward Compatibility:**
+Custom extensions can be safely ignored by standard OpenAI clients. They are clearly namespaced and documented.
 
 ### Entity Management
 

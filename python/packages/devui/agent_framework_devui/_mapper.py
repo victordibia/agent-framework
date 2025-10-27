@@ -19,6 +19,9 @@ from .models import (
     ResponseFunctionCallArgumentsDeltaEvent,
     ResponseFunctionResultComplete,
     ResponseFunctionToolCall,
+    ResponseOutputData,
+    ResponseOutputFile,
+    ResponseOutputImage,
     ResponseOutputItemAddedEvent,
     ResponseOutputMessage,
     ResponseOutputText,
@@ -95,7 +98,7 @@ class MessageMapper:
         if isinstance(raw_event, ResponseTraceEvent):
             return [
                 ResponseTraceEventComplete(
-                    type="response.trace.complete",
+                    type="response.trace.completed",
                     data=raw_event.data,
                     item_id=context["item_id"],
                     sequence_number=self._next_sequence(context),
@@ -381,7 +384,7 @@ class MessageMapper:
 
             # Create structured workflow event
             workflow_event = ResponseWorkflowEventComplete(
-                type="response.workflow_event.complete",
+                type="response.workflow_event.completed",
                 data={
                     "event_type": event.__class__.__name__,
                     "data": event_data,
@@ -597,30 +600,227 @@ class MessageMapper:
         # NO EVENT RETURNED - usage goes in final Response only
         return
 
-    async def _map_data_content(self, content: Any, context: dict[str, Any]) -> ResponseTraceEventComplete:
-        """Map DataContent to structured trace event."""
-        return ResponseTraceEventComplete(
-            type="response.trace.complete",
-            data={
-                "content_type": "data",
-                "data": getattr(content, "data", None),
-                "mime_type": getattr(content, "mime_type", "application/octet-stream"),
-                "size_bytes": len(str(getattr(content, "data", ""))) if getattr(content, "data", None) else 0,
-                "timestamp": datetime.now().isoformat(),
-            },
-            item_id=context["item_id"],
+    async def _map_data_content(
+        self, content: Any, context: dict[str, Any]
+    ) -> ResponseOutputItemAddedEvent | ResponseTraceEventComplete:
+        """Map DataContent to proper output item (image/file/data) or fallback to trace.
+
+        Maps Agent Framework DataContent to appropriate output types:
+        - Images (image/*) → ResponseOutputImage
+        - Common files (pdf, audio, video) → ResponseOutputFile
+        - Generic data → ResponseOutputData
+        - Unknown/debugging content → ResponseTraceEventComplete (fallback)
+        """
+        mime_type = getattr(content, "mime_type", "application/octet-stream")
+        item_id = f"item_{uuid.uuid4().hex[:16]}"
+
+        # Extract data/uri
+        data_value = getattr(content, "data", None)
+        uri_value = getattr(content, "uri", None)
+
+        # Handle images
+        if mime_type.startswith("image/"):
+            # Prefer URI, but create data URI from data if needed
+            if uri_value:
+                image_url = uri_value
+            elif data_value:
+                # Convert bytes to base64 data URI
+                import base64
+
+                if isinstance(data_value, bytes):
+                    b64_data = base64.b64encode(data_value).decode("utf-8")
+                else:
+                    b64_data = str(data_value)
+                image_url = f"data:{mime_type};base64,{b64_data}"
+            else:
+                # No data available, fallback to trace
+                logger.warning(f"DataContent with {mime_type} has no data or uri, falling back to trace")
+                return ResponseTraceEventComplete(
+                    type="response.trace.completed",
+                    data={"content_type": "data", "mime_type": mime_type, "error": "No data or uri"},
+                    item_id=context["item_id"],
+                    output_index=context["output_index"],
+                    sequence_number=self._next_sequence(context),
+                )
+
+            return ResponseOutputItemAddedEvent(
+                type="response.output_item.added",
+                item=ResponseOutputImage(  # type: ignore[arg-type]
+                    id=item_id,
+                    type="output_image",
+                    image_url=image_url,
+                    mime_type=mime_type,
+                    alt_text=None,
+                ),
+                output_index=context["output_index"],
+                sequence_number=self._next_sequence(context),
+            )
+
+        # Handle common file types
+        if mime_type in [
+            "application/pdf",
+            "audio/mp3",
+            "audio/wav",
+            "audio/m4a",
+            "audio/ogg",
+            "audio/flac",
+            "audio/aac",
+            "audio/mpeg",
+            "video/mp4",
+            "video/webm",
+        ]:
+            # Determine filename from mime type
+            ext = mime_type.split("/")[-1]
+            if ext == "mpeg":
+                ext = "mp3"  # audio/mpeg → .mp3
+            filename = f"output.{ext}"
+
+            # Prefer URI
+            if uri_value:
+                file_url = uri_value
+                file_data = None
+            elif data_value:
+                # Convert bytes to base64
+                import base64
+
+                if isinstance(data_value, bytes):
+                    b64_data = base64.b64encode(data_value).decode("utf-8")
+                else:
+                    b64_data = str(data_value)
+                file_url = f"data:{mime_type};base64,{b64_data}"
+                file_data = b64_data
+            else:
+                # No data available, fallback to trace
+                logger.warning(f"DataContent with {mime_type} has no data or uri, falling back to trace")
+                return ResponseTraceEventComplete(
+                    type="response.trace.completed",
+                    data={"content_type": "data", "mime_type": mime_type, "error": "No data or uri"},
+                    item_id=context["item_id"],
+                    output_index=context["output_index"],
+                    sequence_number=self._next_sequence(context),
+                )
+
+            return ResponseOutputItemAddedEvent(
+                type="response.output_item.added",
+                item=ResponseOutputFile(  # type: ignore[arg-type]
+                    id=item_id,
+                    type="output_file",
+                    filename=filename,
+                    file_url=file_url,
+                    file_data=file_data,
+                    mime_type=mime_type,
+                ),
+                output_index=context["output_index"],
+                sequence_number=self._next_sequence(context),
+            )
+
+        # Handle generic data (structured data, JSON, etc.)
+        data_str = ""
+        if uri_value:
+            data_str = uri_value
+        elif data_value:
+            if isinstance(data_value, bytes):
+                try:
+                    data_str = data_value.decode("utf-8")
+                except UnicodeDecodeError:
+                    # Binary data, encode as base64 for display
+                    import base64
+
+                    data_str = base64.b64encode(data_value).decode("utf-8")
+            else:
+                data_str = str(data_value)
+
+        return ResponseOutputItemAddedEvent(
+            type="response.output_item.added",
+            item=ResponseOutputData(  # type: ignore[arg-type]
+                id=item_id,
+                type="output_data",
+                data=data_str,
+                mime_type=mime_type,
+                description=None,
+            ),
             output_index=context["output_index"],
             sequence_number=self._next_sequence(context),
         )
 
-    async def _map_uri_content(self, content: Any, context: dict[str, Any]) -> ResponseTraceEventComplete:
-        """Map UriContent to structured trace event."""
+    async def _map_uri_content(
+        self, content: Any, context: dict[str, Any]
+    ) -> ResponseOutputItemAddedEvent | ResponseTraceEventComplete:
+        """Map UriContent to proper output item (image/file) based on MIME type.
+
+        UriContent has a URI and MIME type, so we can create appropriate output items:
+        - Images → ResponseOutputImage
+        - Common files → ResponseOutputFile
+        - Other URIs → ResponseTraceEventComplete (fallback for debugging)
+        """
+        mime_type = getattr(content, "mime_type", "text/plain")
+        uri = getattr(content, "uri", "")
+        item_id = f"item_{uuid.uuid4().hex[:16]}"
+
+        if not uri:
+            # No URI available, fallback to trace
+            logger.warning("UriContent has no uri, falling back to trace")
+            return ResponseTraceEventComplete(
+                type="response.trace.completed",
+                data={"content_type": "uri", "mime_type": mime_type, "error": "No uri"},
+                item_id=context["item_id"],
+                output_index=context["output_index"],
+                sequence_number=self._next_sequence(context),
+            )
+
+        # Handle images
+        if mime_type.startswith("image/"):
+            return ResponseOutputItemAddedEvent(
+                type="response.output_item.added",
+                item=ResponseOutputImage(  # type: ignore[arg-type]
+                    id=item_id,
+                    type="output_image",
+                    image_url=uri,
+                    mime_type=mime_type,
+                    alt_text=None,
+                ),
+                output_index=context["output_index"],
+                sequence_number=self._next_sequence(context),
+            )
+
+        # Handle common file types
+        if mime_type in [
+            "application/pdf",
+            "audio/mp3",
+            "audio/wav",
+            "audio/m4a",
+            "audio/ogg",
+            "audio/flac",
+            "audio/aac",
+            "audio/mpeg",
+            "video/mp4",
+            "video/webm",
+        ]:
+            # Extract filename from URI or use generic name
+            filename = uri.split("/")[-1] if "/" in uri else f"output.{mime_type.split('/')[-1]}"
+
+            return ResponseOutputItemAddedEvent(
+                type="response.output_item.added",
+                item=ResponseOutputFile(  # type: ignore[arg-type]
+                    id=item_id,
+                    type="output_file",
+                    filename=filename,
+                    file_url=uri,
+                    file_data=None,
+                    mime_type=mime_type,
+                ),
+                output_index=context["output_index"],
+                sequence_number=self._next_sequence(context),
+            )
+
+        # For other URI types (text/plain, application/json, etc.), use trace for now
+        logger.debug(f"UriContent with unsupported MIME type {mime_type}, using trace event")
         return ResponseTraceEventComplete(
-            type="response.trace.complete",
+            type="response.trace.completed",
             data={
                 "content_type": "uri",
-                "uri": getattr(content, "uri", ""),
-                "mime_type": getattr(content, "mime_type", "text/plain"),
+                "uri": uri,
+                "mime_type": mime_type,
                 "timestamp": datetime.now().isoformat(),
             },
             item_id=context["item_id"],
@@ -629,9 +829,15 @@ class MessageMapper:
         )
 
     async def _map_hosted_file_content(self, content: Any, context: dict[str, Any]) -> ResponseTraceEventComplete:
-        """Map HostedFileContent to structured trace event."""
+        """Map HostedFileContent to trace event.
+
+        HostedFileContent references external file IDs (like OpenAI file IDs).
+        These remain as traces since they're metadata about hosted resources,
+        not direct content to display. To display them, agents should return
+        DataContent or UriContent with the actual file data/URL.
+        """
         return ResponseTraceEventComplete(
-            type="response.trace.complete",
+            type="response.trace.completed",
             data={
                 "content_type": "hosted_file",
                 "file_id": getattr(content, "file_id", "unknown"),
@@ -645,9 +851,14 @@ class MessageMapper:
     async def _map_hosted_vector_store_content(
         self, content: Any, context: dict[str, Any]
     ) -> ResponseTraceEventComplete:
-        """Map HostedVectorStoreContent to structured trace event."""
+        """Map HostedVectorStoreContent to trace event.
+
+        HostedVectorStoreContent references external vector store IDs.
+        These remain as traces since they're metadata about hosted resources,
+        not direct content to display.
+        """
         return ResponseTraceEventComplete(
-            type="response.trace.complete",
+            type="response.trace.completed",
             data={
                 "content_type": "hosted_vector_store",
                 "vector_store_id": getattr(content, "vector_store_id", "unknown"),
@@ -723,7 +934,7 @@ class MessageMapper:
     async def _create_unknown_content_event(self, content: Any, context: dict[str, Any]) -> ResponseStreamEvent:
         """Create event for unknown content types."""
         content_type = content.__class__.__name__
-        text = f"⚠️ Unknown content type: {content_type}\n"
+        text = f"Unknown content type: {content_type}\n"
         return self._create_text_delta_event(text, context)
 
     async def _create_error_response(self, error_message: str, request: AgentFrameworkRequest) -> OpenAIResponse:
