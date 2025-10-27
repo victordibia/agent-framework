@@ -116,6 +116,39 @@ function getFunctionResultFromEvent(event: ExtendedResponseStreamEvent): {
   return null;
 }
 
+// Helper to get a stable timestamp for an event
+// Uses event's own timestamp fields if available
+function getEventTimestamp(event: ExtendedResponseStreamEvent): string {
+  // Priority 1: Check for top-level timestamp (DevUI custom events like function_result.complete)
+  if ('timestamp' in event && typeof event.timestamp === 'string') {
+    return new Date(event.timestamp).toLocaleTimeString();
+  }
+
+  // Priority 2: Check for nested data.timestamp (workflow/trace events)
+  if ('data' in event && event.data && typeof event.data === 'object' && 'timestamp' in event.data) {
+    const dataTimestamp = (event.data as any).timestamp;
+    if (typeof dataTimestamp === 'string') {
+      return new Date(dataTimestamp).toLocaleTimeString();
+    }
+  }
+
+  // Priority 3: Check for created_at in response object (lifecycle events)
+  if ('response' in event && event.response && typeof event.response === 'object' && 'created_at' in event.response) {
+    const createdAt = (event.response as any).created_at;
+    if (typeof createdAt === 'number') {
+      return new Date(createdAt * 1000).toLocaleTimeString();
+    }
+  }
+
+  // Fallback: use sequence number as label (better than showing same time for all)
+  if ('sequence_number' in event && typeof event.sequence_number === 'number') {
+    return `#${event.sequence_number}`;
+  }
+
+  // Last resort: hide timestamp by returning empty string
+  return '';
+}
+
 // Helper function to accumulate OpenAI events into meaningful units
 function processEventsForDisplay(
   events: ExtendedResponseStreamEvent[]
