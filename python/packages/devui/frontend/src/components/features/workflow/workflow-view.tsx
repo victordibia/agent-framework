@@ -15,6 +15,7 @@ import {
   Workflow as WorkflowIcon,
   Maximize2,
   ChevronsDown,
+  RefreshCw,
 } from "lucide-react";
 import { LoadingState } from "@/components/ui/loading-state";
 import { WorkflowInputForm } from "./workflow-input-form";
@@ -274,6 +275,7 @@ export function WorkflowView({
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [resultModalOpen, setResultModalOpen] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
+  const [isReloading, setIsReloading] = useState(false);
   const resultContentRef = useRef<HTMLDivElement>(null);
   const errorContentRef = useRef<HTMLDivElement>(null);
   const [isErrorScrollable, setIsErrorScrollable] = useState(false);
@@ -363,6 +365,47 @@ export function WorkflowView({
       ...prev,
       [key]: !prev[key],
     }));
+  };
+
+  // Handle workflow reload (hot reload)
+  const handleReloadEntity = async () => {
+    if (isReloading || !selectedWorkflow) return;
+
+    setIsReloading(true);
+    const { addToast, updateWorkflow } = await import("@/stores").then((m) => ({
+      addToast: m.useDevUIStore.getState().addToast,
+      updateWorkflow: m.useDevUIStore.getState().updateWorkflow,
+    }));
+
+    try {
+      // Call backend reload endpoint
+      await apiClient.reloadEntity(selectedWorkflow.id);
+
+      // Fetch updated workflow info
+      const updatedWorkflow = await apiClient.getWorkflowInfo(selectedWorkflow.id);
+
+      // Update store with fresh metadata
+      updateWorkflow(updatedWorkflow);
+
+      // Update local state
+      setWorkflowInfo(updatedWorkflow);
+
+      // Show success toast
+      addToast({
+        message: `${selectedWorkflow.name} has been reloaded successfully`,
+        type: "success",
+      });
+    } catch (error) {
+      // Show error toast
+      const errorMessage = error instanceof Error ? error.message : "Failed to reload entity";
+      addToast({
+        message: `Failed to reload: ${errorMessage}`,
+        type: "error",
+        duration: 6000,
+      });
+    } finally {
+      setIsReloading(false);
+    }
   };
 
   // Load workflow info when selectedWorkflow changes
@@ -562,11 +605,6 @@ export function WorkflowView({
         );
 
         for await (const openAIEvent of streamGenerator) {
-<<<<<<< HEAD
-          // Only store workflow events in state for performance
-          // Text deltas are processed directly without state updates
-          if (openAIEvent.type === "response.workflow_event.completed") {
-=======
           // Store workflow-related events for tracking
           if (
             openAIEvent.type === "response.output_item.added" ||
@@ -575,9 +613,9 @@ export function WorkflowView({
             openAIEvent.type === "response.in_progress" ||
             openAIEvent.type === "response.completed" ||
             openAIEvent.type === "response.failed" ||
+            openAIEvent.type === "response.workflow_event.completed" ||
             openAIEvent.type === "response.workflow_event.complete" // Legacy
           ) {
->>>>>>> origin/main
             setOpenAIEvents((prev) => [...prev, openAIEvent]);
           }
 
@@ -604,12 +642,24 @@ export function WorkflowView({
 
           // Handle workflow failure
           if (openAIEvent.type === "response.failed") {
-            const error = (openAIEvent as any).response?.error;
+            const failedEvent = openAIEvent as import("@/types/openai").ResponseFailedEvent;
+            const error = failedEvent.response?.error;
+
+            // Format error message with details
+            let errorMessage = "Workflow execution failed";
             if (error) {
-              setWorkflowError(
-                typeof error === "string" ? error : JSON.stringify(error)
-              );
+              if (typeof error === "object" && "message" in error) {
+                errorMessage = error.message as string;
+                if ("code" in error && error.code) {
+                  errorMessage += ` (Code: ${error.code})`;
+                }
+              } else if (typeof error === "string") {
+                errorMessage = error;
+              } else {
+                errorMessage = JSON.stringify(error);
+              }
             }
+            setWorkflowError(errorMessage);
           }
 
           // Legacy support for older backends
@@ -754,6 +804,22 @@ export function WorkflowView({
               title="View workflow details"
             >
               <Info className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleReloadEntity}
+              disabled={isReloading || selectedWorkflow.metadata?.source === "in_memory"}
+              className="h-6 w-6 p-0 flex-shrink-0"
+              title={
+                selectedWorkflow.metadata?.source === "in_memory"
+                  ? "In-memory entities cannot be reloaded"
+                  : isReloading
+                  ? "Reloading..."
+                  : "Reload entity code (hot reload)"
+              }
+            >
+              <RefreshCw className={`h-4 w-4 ${isReloading ? "animate-spin" : ""}`} />
             </Button>
           </div>
 

@@ -207,6 +207,16 @@ class ApiClient {
     );
   }
 
+  async reloadEntity(entityId: string): Promise<{ success: boolean; message: string }> {
+    // Hot reload entity - clears cache and forces reimport on next access
+    return this.request<{ success: boolean; message: string }>(
+      `/v1/entities/${entityId}/reload`,
+      {
+        method: "POST",
+      }
+    );
+  }
+
   // ========================================
   // Conversation Management (OpenAI Standard)
   // ========================================

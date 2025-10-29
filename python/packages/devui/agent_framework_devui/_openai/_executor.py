@@ -11,11 +11,11 @@ import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from openai import AsyncOpenAI, AsyncStream
+from openai import APIStatusError, AsyncOpenAI, AsyncStream, AuthenticationError, PermissionDeniedError, RateLimitError
 from openai.types.responses import Response, ResponseStreamEvent
 
 from .._conversations import ConversationStore
-from ..models import AgentFrameworkRequest, OpenAIError, OpenAIResponse
+from ..models import AgentFrameworkRequest, OpenAIResponse
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +89,19 @@ class OpenAIExecutor:
         """
         if not self.is_configured:
             logger.error("OpenAI executor not configured (missing OPENAI_API_KEY)")
-            error = OpenAIError.create("OpenAI not configured on server. Set OPENAI_API_KEY environment variable.")
-            yield error.to_dict()
+            # Emit proper response.failed event
+            yield {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp_{os.urandom(16).hex()}",
+                    "status": "failed",
+                    "error": {
+                        "message": "OpenAI not configured on server. Set OPENAI_API_KEY environment variable.",
+                        "type": "configuration_error",
+                        "code": "openai_not_configured",
+                    },
+                },
+            }
             return
 
         try:
@@ -122,10 +133,89 @@ class OpenAIExecutor:
             async for event in stream:
                 yield event
 
+        except AuthenticationError as e:
+            # 401 - Invalid API key or authentication issue
+            logger.error(f"OpenAI authentication error: {e}", exc_info=True)
+            error_body = e.body if hasattr(e, "body") else {}
+            error_data = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+            yield {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp_{os.urandom(16).hex()}",
+                    "status": "failed",
+                    "error": {
+                        "message": error_data.get("message", str(e)),
+                        "type": error_data.get("type", "authentication_error"),
+                        "code": error_data.get("code", "invalid_api_key"),
+                    },
+                },
+            }
+        except PermissionDeniedError as e:
+            # 403 - Permission denied
+            logger.error(f"OpenAI permission denied: {e}", exc_info=True)
+            error_body = e.body if hasattr(e, "body") else {}
+            error_data = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+            yield {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp_{os.urandom(16).hex()}",
+                    "status": "failed",
+                    "error": {
+                        "message": error_data.get("message", str(e)),
+                        "type": error_data.get("type", "permission_denied"),
+                        "code": error_data.get("code", "insufficient_permissions"),
+                    },
+                },
+            }
+        except RateLimitError as e:
+            # 429 - Rate limit exceeded
+            logger.error(f"OpenAI rate limit exceeded: {e}", exc_info=True)
+            error_body = e.body if hasattr(e, "body") else {}
+            error_data = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+            yield {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp_{os.urandom(16).hex()}",
+                    "status": "failed",
+                    "error": {
+                        "message": error_data.get("message", str(e)),
+                        "type": error_data.get("type", "rate_limit_error"),
+                        "code": error_data.get("code", "rate_limit_exceeded"),
+                    },
+                },
+            }
+        except APIStatusError as e:
+            # Other OpenAI API errors
+            logger.error(f"OpenAI API error: {e}", exc_info=True)
+            error_body = e.body if hasattr(e, "body") else {}
+            error_data = error_body.get("error", {}) if isinstance(error_body, dict) else {}
+            yield {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp_{os.urandom(16).hex()}",
+                    "status": "failed",
+                    "error": {
+                        "message": error_data.get("message", str(e)),
+                        "type": error_data.get("type", "api_error"),
+                        "code": error_data.get("code", "unknown_error"),
+                    },
+                },
+            }
         except Exception as e:
-            logger.error(f"OpenAI proxy error: {e}", exc_info=True)
-            error = OpenAIError.create(f"OpenAI API error: {e!s}")
-            yield error.to_dict()
+            # Catch-all for unexpected errors
+            logger.error(f"Unexpected error in OpenAI proxy: {e}", exc_info=True)
+            yield {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp_{os.urandom(16).hex()}",
+                    "status": "failed",
+                    "error": {
+                        "message": f"Unexpected error: {e!s}",
+                        "type": "internal_error",
+                        "code": "unexpected_error",
+                    },
+                },
+            }
 
     async def execute_sync(self, request: AgentFrameworkRequest) -> OpenAIResponse:
         """Execute request via OpenAI and return complete response.

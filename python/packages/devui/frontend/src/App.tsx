@@ -8,7 +8,7 @@ import { AppHeader, DebugPanel, SettingsModal, DeploymentModal } from "@/compone
 import { GalleryView } from "@/components/features/gallery";
 import { AgentView } from "@/components/features/agent";
 import { WorkflowView } from "@/components/features/workflow";
-import { Toast } from "@/components/ui/toast";
+import { Toast, ToastContainer } from "@/components/ui/toast";
 import { apiClient } from "@/services/api";
 import { PanelRightOpen, ChevronDown, ServerOff, Rocket } from "lucide-react";
 import type {
@@ -63,6 +63,10 @@ export default function App() {
   const setShowGallery = useDevUIStore((state) => state.setShowGallery);
   const setShowDeployModal = useDevUIStore((state) => state.setShowDeployModal);
   const setShowEntityNotFoundToast = useDevUIStore((state) => state.setShowEntityNotFoundToast);
+
+  // Toast state and actions
+  const toasts = useDevUIStore((state) => state.toasts);
+  const removeToast = useDevUIStore((state) => state.removeToast);
 
   // Initialize app - load agents and workflows
   useEffect(() => {
@@ -474,6 +478,9 @@ export default function App() {
           onClose={() => setShowEntityNotFoundToast(false)}
         />
       )}
+
+      {/* Toast Container for reload and other notifications */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );
 }

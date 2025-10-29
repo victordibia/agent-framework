@@ -116,39 +116,6 @@ function getFunctionResultFromEvent(event: ExtendedResponseStreamEvent): {
   return null;
 }
 
-// Helper to get a stable timestamp for an event
-// Uses event's own timestamp fields if available
-function getEventTimestamp(event: ExtendedResponseStreamEvent): string {
-  // Priority 1: Check for top-level timestamp (DevUI custom events like function_result.complete)
-  if ('timestamp' in event && typeof event.timestamp === 'string') {
-    return new Date(event.timestamp).toLocaleTimeString();
-  }
-
-  // Priority 2: Check for nested data.timestamp (workflow/trace events)
-  if ('data' in event && event.data && typeof event.data === 'object' && 'timestamp' in event.data) {
-    const dataTimestamp = (event.data as any).timestamp;
-    if (typeof dataTimestamp === 'string') {
-      return new Date(dataTimestamp).toLocaleTimeString();
-    }
-  }
-
-  // Priority 3: Check for created_at in response object (lifecycle events)
-  if ('response' in event && event.response && typeof event.response === 'object' && 'created_at' in event.response) {
-    const createdAt = (event.response as any).created_at;
-    if (typeof createdAt === 'number') {
-      return new Date(createdAt * 1000).toLocaleTimeString();
-    }
-  }
-
-  // Fallback: use sequence number as label (better than showing same time for all)
-  if ('sequence_number' in event && typeof event.sequence_number === 'number') {
-    return `#${event.sequence_number}`;
-  }
-
-  // Last resort: hide timestamp by returning empty string
-  return '';
-}
-
 // Helper function to accumulate OpenAI events into meaningful units
 function processEventsForDisplay(
   events: ExtendedResponseStreamEvent[]
@@ -491,7 +458,6 @@ function getEventSummary(event: ExtendedResponseStreamEvent): string {
       return "Workflow event";
 
     case "response.trace.completed":
-    case "response.trace.completed":
       if ("data" in event && event.data) {
         const data = event.data as TraceEventData;
         return `Trace: ${data.operation_name || "unknown"}`;
@@ -539,7 +505,6 @@ function getEventIcon(type: string) {
     case "response.workflow_event.completed":
       return Activity;
     case "response.trace.completed":
-    case "response.trace.completed":
       return Search;
     case "response.completed":
       return CheckCircle2;
@@ -566,7 +531,6 @@ function getEventColor(type: string) {
       return "text-green-600 dark:text-green-400";
     case "response.workflow_event.completed":
       return "text-purple-600 dark:text-purple-400";
-    case "response.trace.completed":
     case "response.trace.completed":
       return "text-orange-600 dark:text-orange-400";
     case "response.completed":
@@ -920,7 +884,6 @@ function EventExpandedContent({
       }
       break;
 
-    case "response.trace.completed":
     case "response.trace.completed":
       if ("data" in event && event.data) {
         const data = event.data as TraceEventData;

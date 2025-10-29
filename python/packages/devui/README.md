@@ -62,6 +62,27 @@ serve(entities=[agent])
 
 MCP tools use lazy initialization and connect automatically on first use. DevUI attempts to clean up connections on shutdown
 
+## Resource Cleanup
+
+Register cleanup hooks to properly close credentials and resources on shutdown:
+
+```python
+from azure.identity.aio import DefaultAzureCredential
+from agent_framework import ChatAgent
+from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework_devui import register_cleanup, serve
+
+credential = DefaultAzureCredential()
+client = AzureOpenAIChatClient()
+agent = ChatAgent(name="MyAgent", chat_client=client)
+
+# Register cleanup hook - credential will be closed on shutdown
+register_cleanup(agent, credential.close)
+serve(entities=[agent])
+```
+
+Works with multiple resources and file-based discovery. See tests for more examples.
+
 ## Directory Structure
 
 For your agents to be discovered by the DevUI, they must be organized in a directory structure like below. Each agent/workflow must have an `__init__.py` that exports the required variable (`agent` or `workflow`).

@@ -55,6 +55,14 @@ interface DevUIState {
   showDeployModal: boolean;
   showEntityNotFoundToast: boolean;
 
+  // Toast Slice
+  toasts: Array<{
+    id: string;
+    message: string;
+    type: "info" | "success" | "warning" | "error";
+    duration?: number;
+  }>;
+
   // OpenAI Proxy Mode Slice
   oaiMode: OAIProxyMode;
 }
@@ -100,6 +108,14 @@ interface DevUIActions {
   setShowGallery: (show: boolean) => void;
   setShowDeployModal: (show: boolean) => void;
   setShowEntityNotFoundToast: (show: boolean) => void;
+
+  // Toast Actions
+  addToast: (toast: {
+    message: string;
+    type?: "info" | "success" | "warning" | "error";
+    duration?: number;
+  }) => void;
+  removeToast: (id: string) => void;
 
   // OpenAI Proxy Mode Actions
   setOAIMode: (config: OAIProxyMode) => void;
@@ -153,6 +169,9 @@ export const useDevUIStore = create<DevUIStore>()(
         showGallery: false,
         showDeployModal: false,
         showEntityNotFoundToast: false,
+
+        // Toast State
+        toasts: [],
 
         // OpenAI Proxy Mode State
         oaiMode: {
@@ -262,6 +281,28 @@ export const useDevUIStore = create<DevUIStore>()(
         setShowDeployModal: (show) => set({ showDeployModal: show }),
         setShowEntityNotFoundToast: (show) =>
           set({ showEntityNotFoundToast: show }),
+
+        // ========================================
+        // Toast Actions
+        // ========================================
+
+        addToast: (toast) =>
+          set((state) => ({
+            toasts: [
+              ...state.toasts,
+              {
+                id: `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                type: toast.type || "info",
+                duration: toast.duration || 4000,
+                ...toast,
+              },
+            ],
+          })),
+
+        removeToast: (id) =>
+          set((state) => ({
+            toasts: state.toasts.filter((t) => t.id !== id),
+          })),
 
         // ========================================
         // OpenAI Proxy Mode Actions

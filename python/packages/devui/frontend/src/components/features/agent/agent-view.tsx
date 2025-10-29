@@ -36,6 +36,7 @@ import {
   X,
   Copy,
   CheckCheck,
+  RefreshCw,
 } from "lucide-react";
 import { apiClient } from "@/services/api";
 import type {
@@ -213,6 +214,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
   const attachments = useDevUIStore((state) => state.attachments);
   const conversationUsage = useDevUIStore((state) => state.conversationUsage);
   const pendingApprovals = useDevUIStore((state) => state.pendingApprovals);
+  const oaiMode = useDevUIStore((state) => state.oaiMode);
 
   // Get conversation actions from Zustand (only the ones we actually use)
   const setCurrentConversation = useDevUIStore((state) => state.setCurrentConversation);
@@ -231,6 +233,12 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
   const [dragCounter, setDragCounter] = useState(0);
   const [pasteNotification, setPasteNotification] = useState<string | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [conversationError, setConversationError] = useState<{
+    message: string;
+    code?: string;
+    type?: string;
+  } | null>(null);
+  const [isReloading, setIsReloading] = useState(false);
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -376,13 +384,21 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
         setAvailableConversations([newConversation]);
         setChatItems([]);
         setIsStreaming(false);
+        setConversationError(null); // Clear any previous errors
 
         // Save to localStorage
         localStorage.setItem(cachedKey, JSON.stringify([newConversation]));
-      } catch {
+      } catch (error) {
         setAvailableConversations([]);
         setChatItems([]);
         setIsStreaming(false);
+
+        // Extract error details for display
+        const errorMessage = error instanceof Error ? error.message : "Failed to create conversation";
+        setConversationError({
+          message: errorMessage,
+          type: "conversation_creation_error",
+        });
       } finally {
         setLoadingConversations(false);
       }
@@ -629,6 +645,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
       setAvailableConversations([newConversation, ...useDevUIStore.getState().availableConversations]);
       setChatItems([]);
       setIsStreaming(false);
+      setConversationError(null); // Clear any previous errors
       // Reset conversation usage by setting it to initial state
       useDevUIStore.setState({ conversationUsage: { total_tokens: 0, message_count: 0 } });
       accumulatedText.current = "";
@@ -637,8 +654,13 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
       const cachedKey = `devui_convs_${selectedAgent.id}`;
       const updated = [newConversation, ...availableConversations];
       localStorage.setItem(cachedKey, JSON.stringify(updated));
-    } catch {
-      // Failed to create conversation
+    } catch (error) {
+      // Failed to create conversation - show error to user
+      const errorMessage = error instanceof Error ? error.message : "Failed to create conversation";
+      setConversationError({
+        message: errorMessage,
+        type: "conversation_creation_error",
+      });
     }
   }, [selectedAgent, availableConversations, setCurrentConversation, setAvailableConversations, setChatItems, setIsStreaming]);
 
@@ -701,6 +723,42 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
     },
     [availableConversations, currentConversation, selectedAgent, onDebugEvent, setAvailableConversations, setCurrentConversation, setChatItems, setIsStreaming]
   );
+
+  // Handle entity reload (hot reload)
+  const handleReloadEntity = useCallback(async () => {
+    if (isReloading || !selectedAgent) return;
+
+    setIsReloading(true);
+    const addToast = useDevUIStore.getState().addToast;
+    const updateAgent = useDevUIStore.getState().updateAgent;
+
+    try {
+      // Call backend reload endpoint
+      await apiClient.reloadEntity(selectedAgent.id);
+
+      // Fetch updated entity info
+      const updatedAgent = await apiClient.getAgentInfo(selectedAgent.id);
+
+      // Update store with fresh metadata
+      updateAgent(updatedAgent);
+
+      // Show success toast
+      addToast({
+        message: `${selectedAgent.name} has been reloaded successfully`,
+        type: "success",
+      });
+    } catch (error) {
+      // Show error toast
+      const errorMessage = error instanceof Error ? error.message : "Failed to reload entity";
+      addToast({
+        message: `Failed to reload: ${errorMessage}`,
+        type: "error",
+        duration: 6000,
+      });
+    } finally {
+      setIsReloading(false);
+    }
+  }, [isReloading, selectedAgent]);
 
   // Handle conversation selection
   const handleConversationSelect = useCallback(
@@ -856,8 +914,17 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
             });
             setCurrentConversation(conversationToUse);
             setAvailableConversations([conversationToUse, ...useDevUIStore.getState().availableConversations]);
-          } catch {
-            // Failed to create conversation
+            setConversationError(null); // Clear any previous errors
+          } catch (error) {
+            // Failed to create conversation - show error and stop execution
+            const errorMessage = error instanceof Error ? error.message : "Failed to create conversation";
+            setConversationError({
+              message: errorMessage,
+              type: "conversation_creation_error",
+            });
+            setIsSubmitting(false);
+            setIsStreaming(false);
+            return; // Stop execution - can't send message without conversation
           }
         }
 
@@ -892,6 +959,44 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
               };
             }
             continue; // Continue processing other events
+          }
+
+          // Handle response.failed event (OpenAI standard)
+          if (openAIEvent.type === "response.failed") {
+            const failedEvent = openAIEvent as import("@/types/openai").ResponseFailedEvent;
+            const error = failedEvent.response?.error;
+
+            // Format error message with details
+            let errorMessage = "Request failed";
+            if (error) {
+              if (typeof error === "object" && "message" in error) {
+                errorMessage = error.message as string;
+                if ("code" in error && error.code) {
+                  errorMessage += ` (Code: ${error.code})`;
+                }
+              } else if (typeof error === "string") {
+                errorMessage = error;
+              }
+            }
+
+            // Update assistant message with error
+            const currentItems = useDevUIStore.getState().chatItems;
+            setChatItems(currentItems.map((item) =>
+              item.id === assistantMessage.id && item.type === "message"
+                ? {
+                    ...item,
+                    content: [
+                      {
+                        type: "text",
+                        text: errorMessage,
+                      } as import("@/types/openai").MessageTextContent,
+                    ],
+                    status: "incomplete" as const,
+                  }
+                : item
+            ));
+            setIsStreaming(false);
+            return; // Exit stream processing on failure
           }
 
           // Handle function approval request events
@@ -1211,19 +1316,42 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
               <div className="flex items-center gap-2">
                 <Bot className="h-4 w-4 flex-shrink-0" />
                 <span className="truncate">
-                  Chat with {selectedAgent.name || selectedAgent.id}
+                  {oaiMode.enabled
+                    ? `Chat with ${oaiMode.model}`
+                    : `Chat with ${selectedAgent.name || selectedAgent.id}`
+                  }
                 </span>
               </div>
             </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setDetailsModalOpen(true)}
-              className="h-6 w-6 p-0 flex-shrink-0"
-              title="View agent details"
-            >
-              <Info className="h-4 w-4" />
-            </Button>
+            {!oaiMode.enabled && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDetailsModalOpen(true)}
+                  className="h-6 w-6 p-0 flex-shrink-0"
+                  title="View agent details"
+                >
+                  <Info className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleReloadEntity}
+                  disabled={isReloading || selectedAgent.metadata?.source === "in_memory"}
+                  className="h-6 w-6 p-0 flex-shrink-0"
+                  title={
+                    selectedAgent.metadata?.source === "in_memory"
+                      ? "In-memory entities cannot be reloaded"
+                      : isReloading
+                      ? "Reloading..."
+                      : "Reload entity code (hot reload)"
+                  }
+                >
+                  <RefreshCw className={`h-4 w-4 ${isReloading ? "animate-spin" : ""}`} />
+                </Button>
+              </>
+            )}
           </div>
 
           {/* Conversation Controls */}
@@ -1315,12 +1443,45 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
           </div>
         </div>
 
-        {selectedAgent.description && (
+        {oaiMode.enabled ? (
           <p className="text-sm text-muted-foreground">
-            {selectedAgent.description}
+            Using OpenAI model directly. Local agent tools and instructions are not applied.
           </p>
+        ) : (
+          selectedAgent.description && (
+            <p className="text-sm text-muted-foreground">
+              {selectedAgent.description}
+            </p>
+          )
         )}
       </div>
+
+      {/* Error Banner */}
+      {conversationError && (
+        <div className="mx-4 mt-2 p-3 bg-destructive/10 border border-destructive/30 rounded-md flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-destructive">
+              Failed to Create Conversation
+            </div>
+            <div className="text-xs text-destructive/90 mt-1 break-words">
+              {conversationError.message}
+            </div>
+            {conversationError.code && (
+              <div className="text-xs text-destructive/70 mt-1">
+                Error Code: {conversationError.code}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => setConversationError(null)}
+            className="text-destructive hover:text-destructive/80 flex-shrink-0"
+            title="Dismiss error"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Messages */}
       <ScrollArea className="flex-1 p-4 h-0" ref={scrollAreaRef}>

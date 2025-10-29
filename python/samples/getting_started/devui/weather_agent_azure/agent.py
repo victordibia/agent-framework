@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 """Sample weather agent for Agent Framework Debug UI."""
 
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from typing import Annotated
@@ -17,6 +18,17 @@ from agent_framework import (
     ai_function
 )
 from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework_devui import register_cleanup
+
+logger = logging.getLogger(__name__)
+
+
+def cleanup_resources():
+    """Cleanup function that runs when DevUI shuts down."""
+    logger.info("=" * 60)
+    logger.info(" Cleaning up resources...")
+    logger.info("   (In production, this would close credentials, sessions, etc.)")
+    logger.info("=" * 60)
 
 
 @chat_middleware
@@ -118,6 +130,9 @@ agent = ChatAgent(
     tools=[get_weather, get_forecast, send_email],
     middleware=[security_filter_middleware, atlantis_location_filter_middleware],
 )
+
+# Register cleanup hook - demonstrates resource cleanup on shutdown
+register_cleanup(agent, cleanup_resources)
 
 
 def main():
