@@ -55,6 +55,13 @@ Examples:
 
     parser.add_argument("--tracing", action="store_true", help="Enable OpenTelemetry tracing for Agent Framework")
 
+    parser.add_argument(
+        "--mode",
+        choices=["developer", "user"],
+        default="developer",
+        help="UI interface mode - 'developer' shows debug tools, 'user' shows simplified interface",
+    )
+
     parser.add_argument("--version", action="version", version=f"Agent Framework DevUI {get_version()}")
 
     return parser
@@ -128,6 +135,7 @@ def main() -> None:
             auto_open=not args.no_open,
             ui_enabled=ui_enabled,
             tracing_enabled=args.tracing,
+            ui_mode=args.mode,
         )
 
     except KeyboardInterrupt:

@@ -68,6 +68,7 @@ export type ResponseInputParam = ResponseInputItem[];
 // Agent Framework extension fields (matches backend AgentFrameworkExtraBody)
 export interface AgentFrameworkExtraBody {
   entity_id: string;
+  checkpoint_id?: string; // Optional checkpoint ID for workflow resume
   // input_data removed - now using standard input field for all data
 }
 

@@ -18,7 +18,7 @@ from ._discovery import EntityDiscovery
 from ._executor import AgentFrameworkExecutor
 from ._mapper import MessageMapper
 from ._openai import OpenAIExecutor
-from .models import AgentFrameworkRequest, OpenAIError
+from .models import AgentFrameworkRequest, MetaResponse, OpenAIError
 from .models._discovery_models import DiscoveryResponse, EntityInfo
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ class DevServer:
         host: str = "127.0.0.1",
         cors_origins: list[str] | None = None,
         ui_enabled: bool = True,
+        ui_mode: str = "developer",
     ) -> None:
         """Initialize the development server.
 
@@ -43,12 +44,14 @@ class DevServer:
             host: Host to bind server to
             cors_origins: List of allowed CORS origins
             ui_enabled: Whether to enable the UI
+            ui_mode: UI interface mode - 'developer' or 'user'
         """
         self.entities_dir = entities_dir
         self.port = port
         self.host = host
         self.cors_origins = cors_origins or ["*"]
         self.ui_enabled = ui_enabled
+        self.ui_mode = ui_mode
         self.executor: AgentFrameworkExecutor | None = None
         self.openai_executor: OpenAIExecutor | None = None
         self._app: FastAPI | None = None
@@ -254,6 +257,26 @@ class DevServer:
 
             return {"status": "healthy", "entities_count": len(entities), "framework": "agent_framework"}
 
+        @app.get("/meta", response_model=MetaResponse)
+        async def get_meta() -> MetaResponse:
+            """Get server metadata and configuration."""
+            import os
+
+            from . import __version__
+
+            # Ensure executors are initialized to check capabilities
+            openai_executor = await self._ensure_openai_executor()
+
+            return MetaResponse(
+                ui_mode=self.ui_mode,  # type: ignore[arg-type]
+                version=__version__,
+                framework="agent_framework",
+                capabilities={
+                    "tracing": os.getenv("ENABLE_OTEL") == "true",
+                    "openai_proxy": openai_executor.is_configured,
+                },
+            )
+
         @app.get("/v1/entities", response_model=DiscoveryResponse)
         async def discover_entities() -> DiscoveryResponse:
             """List all registered entities."""
@@ -356,12 +379,18 @@ class DevServer:
                     if hasattr(entity_obj, "executors") and entity_obj.executors:
                         executor_list = [getattr(ex, "executor_id", str(ex)) for ex in entity_obj.executors]
 
+                    # Check if workflow supports checkpointing
+                    from ._executor import workflow_supports_checkpointing
+
+                    supports_checkpointing = workflow_supports_checkpointing(entity_obj)
+
                     # Create copy of entity info and populate workflow-specific fields
                     update_payload: dict[str, Any] = {
                         "workflow_dump": workflow_dump,
                         "input_schema": input_schema,
                         "input_type_name": input_type_name,
                         "start_executor_id": start_executor_id,
+                        "supports_checkpointing": supports_checkpointing,
                     }
                     if executor_list:
                         update_payload["executors"] = executor_list
@@ -480,7 +509,7 @@ class DevServer:
         # OpenAI Conversations API (Standard)
         # ========================================
 
-        @app.post("/v1/conversations")
+        @app.post("/v1/conversations", response_model=None)
         async def create_conversation(raw_request: Request) -> dict[str, Any] | JSONResponse:
             """Create a new conversation - routes to OpenAI or local based on mode."""
             try:

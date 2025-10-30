@@ -30,6 +30,9 @@ export default function App() {
   // OpenAI proxy mode
   const oaiMode = useDevUIStore((state) => state.oaiMode);
 
+  // UI mode
+  const uiMode = useDevUIStore((state) => state.uiMode);
+
   // Entity actions
   const setAgents = useDevUIStore((state) => state.setAgents);
   const setWorkflows = useDevUIStore((state) => state.setWorkflows);
@@ -72,6 +75,13 @@ export default function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
+        // Fetch server metadata first (ui_mode, capabilities)
+        const meta = await apiClient.getMeta();
+        useDevUIStore.getState().setServerMeta({
+          uiMode: meta.ui_mode,
+          capabilities: meta.capabilities,
+        });
+
         // Single API call instead of two parallel calls to same endpoint
         const { agents: agentList, workflows: workflowList } = await apiClient.getEntities();
 
@@ -395,7 +405,7 @@ export default function App() {
               )}
             </div>
 
-            {showDebugPanel ? (
+            {uiMode === "developer" && showDebugPanel ? (
               <>
                 {/* Resize Handle */}
                 <div
@@ -442,7 +452,7 @@ export default function App() {
                   </div>
                 </div>
               </>
-            ) : (
+            ) : uiMode === "developer" ? (
               /* Button to reopen when closed */
               <div className="flex-shrink-0">
                 <Button
@@ -455,7 +465,7 @@ export default function App() {
                   <PanelRightOpen className="h-4 w-4" />
                 </Button>
               </div>
-            )}
+            ) : null}
           </>
         )}
       </div>

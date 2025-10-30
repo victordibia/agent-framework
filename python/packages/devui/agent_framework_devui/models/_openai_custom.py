@@ -139,6 +139,51 @@ class ResponseFunctionResultComplete(BaseModel):
     timestamp: str | None = None  # Optional timestamp for UI display
 
 
+class ResponseRequestInfoEvent(BaseModel):
+    """DevUI extension: Workflow requests human input.
+
+    This is a DevUI extension because:
+    - OpenAI Responses API doesn't have a concept of workflow human-in-the-loop pausing
+    - Agent Framework workflows can pause via RequestInfoExecutor to collect external information
+    - Clients need to render forms and submit responses to continue workflow execution
+
+    When a workflow emits this event, it enters IDLE_WITH_PENDING_REQUESTS state.
+    Client should render a form based on request_schema and submit responses via
+    a new request with workflow_hil_response content type.
+    """
+
+    type: Literal["response.request_info.requested"] = "response.request_info.requested"
+    request_id: str
+    """Unique identifier for correlating this request with the response."""
+
+    source_executor_id: str
+    """ID of the executor that is waiting for this response."""
+
+    request_type: str
+    """Fully qualified type name of the request (e.g., 'module.path:ClassName')."""
+
+    request_data: dict[str, Any]
+    """Current data from the RequestInfoMessage (may contain defaults/context)."""
+
+    request_schema: dict[str, Any]
+    """JSON schema describing the request data structure (what the workflow is asking about)."""
+
+    response_schema: dict[str, Any] | None = None
+    """JSON schema describing the expected response structure for form rendering (what user should provide)."""
+
+    item_id: str
+    """OpenAI item ID for correlation."""
+
+    output_index: int = 0
+    """Output index for OpenAI compatibility."""
+
+    sequence_number: int
+    """Sequence number for ordering events."""
+
+    timestamp: str
+    """ISO timestamp when the request was made."""
+
+
 # DevUI Output Content Types - for agent-generated media/data
 # These extend ResponseOutputItem to support rich content outputs that OpenAI's API doesn't natively support
 
@@ -325,9 +370,29 @@ class OpenAIError(BaseModel):
         return self.model_dump_json()
 
 
+class MetaResponse(BaseModel):
+    """Server metadata response for /meta endpoint.
+
+    Provides information about the DevUI server configuration and capabilities.
+    """
+
+    ui_mode: Literal["developer", "user"] = "developer"
+    """UI interface mode - 'developer' shows debug tools, 'user' shows simplified interface."""
+
+    version: str
+    """DevUI version string."""
+
+    framework: str = "agent_framework"
+    """Backend framework identifier."""
+
+    capabilities: dict[str, bool] = {}
+    """Server capabilities (e.g., tracing, openai_proxy)."""
+
+
 # Export all custom types
 __all__ = [
     "AgentFrameworkRequest",
+    "MetaResponse",
     "OpenAIError",
     "ResponseFunctionResultComplete",
     "ResponseOutputData",

@@ -280,6 +280,20 @@ export interface ResponseFunctionResultComplete {
   timestamp?: string;  // Optional ISO timestamp for UI display
 }
 
+// DevUI Extension: Workflow Requests Human Input (HIL)
+export interface ResponseRequestInfoEvent {
+  type: "response.request_info.requested";
+  request_id: string;
+  source_executor_id: string;
+  request_type: string;
+  request_data: Record<string, unknown>;
+  request_schema: Record<string, unknown>;
+  item_id: string;
+  output_index: number;
+  sequence_number: number;
+  timestamp: string;
+}
+
 // DevUI Extension: Turn Separator (UI-only event for grouping)
 export interface TurnSeparatorEvent {
   type: "debug.turn_separator";
@@ -302,6 +316,7 @@ export type StructuredEvent =
   | ResponseFunctionCallDelta
   | ResponseFunctionCallArgumentsDelta
   | ResponseFunctionResultComplete
+  | ResponseRequestInfoEvent
   | ResponseErrorEvent
   | ResponseFunctionApprovalRequestedEvent
   | ResponseFunctionApprovalRespondedEvent

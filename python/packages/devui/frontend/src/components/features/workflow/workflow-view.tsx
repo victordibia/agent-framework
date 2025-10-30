@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { LoadingState } from "@/components/ui/loading-state";
 import { WorkflowInputForm } from "./workflow-input-form";
+import { HilInputModal } from "./hil-input-modal";
 import { Button } from "@/components/ui/button";
 import { WorkflowFlow } from "./workflow-flow";
 import { useWorkflowEventCorrelation } from "@/hooks/useWorkflowEventCorrelation";
@@ -29,6 +30,7 @@ import type {
   ExtendedResponseStreamEvent,
   JSONSchemaProperty,
 } from "@/types";
+import type { ResponseRequestInfoEvent } from "@/types/openai";
 import type { ExecutorNodeData } from "./executor-node";
 import {
   Dialog,
@@ -276,6 +278,19 @@ export function WorkflowView({
   const [resultModalOpen, setResultModalOpen] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
+
+  // HIL (Human-in-the-Loop) state
+  const [pendingHilRequests, setPendingHilRequests] = useState<
+    Array<{
+      request_id: string;
+      request_data: Record<string, unknown>;
+      request_schema: JSONSchemaProperty;
+    }>
+  >([]);
+  const [hilResponses, setHilResponses] = useState<
+    Record<string, Record<string, unknown>>
+  >({});
+  const [showHilModal, setShowHilModal] = useState(false);
   const resultContentRef = useRef<HTMLDivElement>(null);
   const errorContentRef = useRef<HTMLDivElement>(null);
   const [isErrorScrollable, setIsErrorScrollable] = useState(false);
@@ -284,6 +299,21 @@ export function WorkflowView({
   const executorOutputs = useRef<Record<string, string>>({});
   const currentStreamingExecutor = useRef<string | null>(null);
   const workflowMetadata = useRef<Record<string, unknown> | null>(null);
+
+  // Conversation/Session management for workflows (enables checkpoint resume)
+  const [selectedConversationId, setSelectedConversationId] = useState<
+    string | null
+  >(null);
+
+  // Checkpoint management
+  const [availableCheckpoints, setAvailableCheckpoints] = useState<
+    Array<{
+      checkpoint_id: string;
+      workflow_id: string;
+      timestamp: number;
+    }>
+  >([]);
+  const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
 
   // Panel resize state
   const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
@@ -417,6 +447,30 @@ export function WorkflowView({
       try {
         const info = await apiClient.getWorkflowInfo(selectedWorkflow.id);
         setWorkflowInfo(info);
+
+        // Load checkpoints if workflow supports them
+        if (info.supports_checkpointing) {
+          try {
+            // Use existing conversation API to get checkpoints
+            const { data: conversations } = await apiClient.listConversations(selectedWorkflow.id);
+
+            // Filter conversations that have checkpoint_id in metadata
+            const checkpointConversations = conversations
+              .filter(conv => conv.metadata?.checkpoint_id)
+              .map(conv => ({
+                checkpoint_id: conv.metadata!.checkpoint_id!,
+                workflow_id: selectedWorkflow.id,
+                timestamp: conv.created_at,
+              }));
+
+            setAvailableCheckpoints(checkpointConversations);
+          } catch (error) {
+            console.error("Error loading checkpoints:", error);
+            setAvailableCheckpoints([]);
+          }
+        } else {
+          setAvailableCheckpoints([]);
+        }
       } catch (error) {
         setWorkflowInfo(null);
         console.error("Error loading workflow info:", error);
@@ -434,6 +488,18 @@ export function WorkflowView({
     executorOutputs.current = {};
     currentStreamingExecutor.current = null;
     workflowMetadata.current = null;
+
+    // Generate conversation_id ONLY if we don't have one OR workflow ID changed
+    // This ensures the same conversation_id is used throughout a single workflow session
+    setSelectedConversationId((prevId) => {
+      const shouldCreateNew =
+        !prevId || !prevId.includes(selectedWorkflow.id);
+      if (shouldCreateNew) {
+        const newId = `workflow_session_${selectedWorkflow.id}_${Date.now()}`;
+        return newId;
+      }
+      return prevId;
+    });
 
     loadWorkflowInfo();
   }, [selectedWorkflow.id, selectedWorkflow.type]);
@@ -596,7 +662,11 @@ export function WorkflowView({
       onDebugEvent("clear");
 
       try {
-        const request = { input_data: inputData };
+        const request = {
+          input_data: inputData,
+          conversation_id: selectedConversationId || undefined,  // Pass conversation for checkpoint support
+          checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint if any
+        };
 
         // Use OpenAI-compatible API streaming - direct event handling
         const streamGenerator = apiClient.streamWorkflowExecutionOpenAI(
@@ -741,6 +811,33 @@ export function WorkflowView({
             }
           }
 
+          // Handle HIL (Human-in-the-Loop) requests
+          if (openAIEvent.type === "response.request_info.requested") {
+            const hilEvent = openAIEvent as ResponseRequestInfoEvent;
+
+            setPendingHilRequests((prev) => [
+              ...prev,
+              {
+                request_id: hilEvent.request_id,
+                request_data: hilEvent.request_data,
+                request_schema: hilEvent.request_schema as unknown as JSONSchemaProperty,
+              },
+            ]);
+
+            // Initialize responses with empty object
+            // The request_data is shown as readonly context in the modal
+            // The user fills in the actual response based on response_schema
+            setHilResponses((prev) => ({
+              ...prev,
+              [hilEvent.request_id]: {},
+            }));
+
+            // Auto-show modal when first request arrives
+            if (pendingHilRequests.length === 0) {
+              setShowHilModal(true);
+            }
+          }
+
           // Handle errors
           if (openAIEvent.type === "error") {
             setWorkflowError(
@@ -750,6 +847,11 @@ export function WorkflowView({
             );
             break;
           }
+        }
+
+        // Check if workflow ended with pending HIL requests
+        if (pendingHilRequests.length > 0 && !showHilModal) {
+          setShowHilModal(true);
         }
 
         setIsStreaming(false);
@@ -762,6 +864,101 @@ export function WorkflowView({
     },
     [selectedWorkflow, onDebugEvent, workflowInfo]
   );
+
+  // Handle HIL response submission
+  const handleSubmitHilResponses = useCallback(async () => {
+    if (!selectedWorkflow || selectedWorkflow.type !== "workflow") return;
+
+    setShowHilModal(false);
+    setIsStreaming(true);
+
+    try {
+      // Create OpenAI request with workflow_hil_response content type
+      const request = {
+        input_data: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "workflow_hil_response",
+                responses: hilResponses,
+              },
+            ],
+          },
+        ] as any, // OpenAI Responses API format, cast to satisfy TypeScript
+        conversation_id: selectedConversationId || undefined,
+        checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint
+      };
+
+      // Use OpenAI-compatible API streaming to continue workflow
+      const streamGenerator = apiClient.streamWorkflowExecutionOpenAI(
+        selectedWorkflow.id,
+        request
+      );
+
+      for await (const openAIEvent of streamGenerator) {
+        // Store workflow-related events
+        if (
+          openAIEvent.type === "response.output_item.added" ||
+          openAIEvent.type === "response.output_item.done" ||
+          openAIEvent.type === "response.created" ||
+          openAIEvent.type === "response.in_progress" ||
+          openAIEvent.type === "response.completed" ||
+          openAIEvent.type === "response.failed" ||
+          openAIEvent.type === "response.workflow_event.completed"
+        ) {
+          setOpenAIEvents((prev) => [...prev, openAIEvent]);
+        }
+
+        // Pass to debug panel
+        onDebugEvent(openAIEvent);
+
+        // Handle text output
+        if (
+          openAIEvent.type === "response.output_text.delta" &&
+          "delta" in openAIEvent &&
+          openAIEvent.delta
+        ) {
+          const executorId = currentStreamingExecutor.current;
+          if (executorId) {
+            executorOutputs.current[executorId] =
+              (executorOutputs.current[executorId] || "") + openAIEvent.delta;
+            setWorkflowResult(executorOutputs.current[executorId]);
+          }
+        }
+
+        // Handle completion
+        if (openAIEvent.type === "response.completed") {
+          // Workflow completed successfully
+        }
+
+        // Handle errors
+        if (openAIEvent.type === "response.failed") {
+          const failedEvent = openAIEvent as import("@/types/openai").ResponseFailedEvent;
+          const error = failedEvent.response?.error;
+          let errorMessage = "Workflow execution failed";
+          if (error) {
+            if (typeof error === "object" && "message" in error) {
+              errorMessage = error.message as string;
+            } else if (typeof error === "string") {
+              errorMessage = error;
+            }
+          }
+          setWorkflowError(errorMessage);
+        }
+      }
+
+      // Clear HIL state after successful submission
+      setPendingHilRequests([]);
+      setHilResponses({});
+      setIsStreaming(false);
+    } catch (error) {
+      setWorkflowError(
+        error instanceof Error ? error.message : "HIL submission failed"
+      );
+      setIsStreaming(false);
+    }
+  }, [selectedWorkflow, hilResponses, onDebugEvent]);
 
   // Show loading state when workflow is being loaded
   if (workflowLoading) {
@@ -826,6 +1023,27 @@ export function WorkflowView({
           {/* Run Workflow Controls */}
           {workflowInfo && (
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-shrink-0">
+              {/* Checkpoint Selector */}
+              {workflowInfo.supports_checkpointing && (
+                <select
+                  value={selectedCheckpointId || ""}
+                  onChange={(e) => setSelectedCheckpointId(e.target.value || null)}
+                  className="px-3 py-2 border rounded-md text-sm bg-background"
+                  disabled={isStreaming}
+                >
+                  <option value="">
+                    {availableCheckpoints.length === 0
+                      ? "No Checkpoints (Start Fresh)"
+                      : "Start Fresh (No Checkpoint)"}
+                  </option>
+                  {availableCheckpoints.map((cp) => (
+                    <option key={cp.checkpoint_id} value={cp.checkpoint_id}>
+                      Checkpoint {cp.checkpoint_id.slice(0, 8)}... - {new Date(cp.timestamp * 1000).toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+              )}
+
               <RunWorkflowButton
                 inputSchema={workflowInfo.input_schema}
                 onRun={handleSendWorkflowData}
@@ -1337,6 +1555,22 @@ export function WorkflowView({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* HIL (Human-in-the-Loop) Input Modal */}
+      <HilInputModal
+        open={showHilModal}
+        onOpenChange={setShowHilModal}
+        requests={pendingHilRequests}
+        responses={hilResponses}
+        onResponseChange={(requestId, values) => {
+          setHilResponses((prev) => ({
+            ...prev,
+            [requestId]: values,
+          }));
+        }}
+        onSubmit={handleSubmitHilResponses}
+        isSubmitting={isStreaming}
+      />
     </div>
   );
 }

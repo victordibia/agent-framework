@@ -212,6 +212,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
   const loadingConversations = useDevUIStore((state) => state.loadingConversations);
   const inputValue = useDevUIStore((state) => state.inputValue);
   const attachments = useDevUIStore((state) => state.attachments);
+  const uiMode = useDevUIStore((state) => state.uiMode);
   const conversationUsage = useDevUIStore((state) => state.conversationUsage);
   const pendingApprovals = useDevUIStore((state) => state.pendingApprovals);
   const oaiMode = useDevUIStore((state) => state.oaiMode);
@@ -1323,7 +1324,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
                 </span>
               </div>
             </h2>
-            {!oaiMode.enabled && (
+            {!oaiMode.enabled && uiMode === "developer" && (
               <>
                 <Button
                   variant="ghost"

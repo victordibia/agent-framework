@@ -94,6 +94,7 @@ def serve(
     cors_origins: list[str] | None = None,
     ui_enabled: bool = True,
     tracing_enabled: bool = False,
+    ui_mode: str = "developer",
 ) -> None:
     """Launch Agent Framework DevUI with simple API.
 
@@ -106,6 +107,7 @@ def serve(
         cors_origins: List of allowed CORS origins
         ui_enabled: Whether to enable the UI
         tracing_enabled: Whether to enable OpenTelemetry tracing
+        ui_mode: UI interface mode - 'developer' shows debug tools, 'user' shows simplified interface
     """
     import re
 
@@ -138,7 +140,12 @@ def serve(
 
     # Create server with direct parameters
     server = DevServer(
-        entities_dir=entities_dir, port=port, host=host, cors_origins=cors_origins, ui_enabled=ui_enabled
+        entities_dir=entities_dir,
+        port=port,
+        host=host,
+        cors_origins=cors_origins,
+        ui_enabled=ui_enabled,
+        ui_mode=ui_mode,
     )
 
     # Register in-memory entities if provided

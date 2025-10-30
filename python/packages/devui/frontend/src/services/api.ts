@@ -8,6 +8,7 @@ import type {
   AgentSource,
   Conversation,
   HealthResponse,
+  MetaResponse,
   RunAgentRequest,
   RunWorkflowRequest,
   WorkflowInfo,
@@ -112,6 +113,11 @@ class ApiClient {
   // Health check
   async getHealth(): Promise<HealthResponse> {
     return this.request<HealthResponse>("/health");
+  }
+
+  // Server metadata
+  async getMeta(): Promise<MetaResponse> {
+    return this.request<MetaResponse>("/meta");
   }
 
   // Entity discovery using new unified endpoint
@@ -456,6 +462,9 @@ class ApiClient {
       input: request.input_data || "", // Send dict directly, no stringification needed
       stream: true,
       conversation: request.conversation_id, // Include conversation if present
+      extra_body: request.checkpoint_id
+        ? { entity_id: workflowId, checkpoint_id: request.checkpoint_id }
+        : undefined, // Pass checkpoint_id if provided
     };
 
     const response = await fetch(`${this.baseUrl}/v1/responses`, {

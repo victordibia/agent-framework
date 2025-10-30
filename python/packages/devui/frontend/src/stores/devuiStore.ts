@@ -65,6 +65,13 @@ interface DevUIState {
 
   // OpenAI Proxy Mode Slice
   oaiMode: OAIProxyMode;
+
+  // Server Meta Slice
+  uiMode: "developer" | "user";
+  serverCapabilities: {
+    tracing: boolean;
+    openai_proxy: boolean;
+  };
 }
 
 // ========================================
@@ -120,6 +127,9 @@ interface DevUIActions {
   // OpenAI Proxy Mode Actions
   setOAIMode: (config: OAIProxyMode) => void;
   toggleOAIMode: () => void;
+
+  // Server Meta Actions
+  setServerMeta: (meta: { uiMode: "developer" | "user"; capabilities: { tracing: boolean; openai_proxy: boolean } }) => void;
 
   // Combined Actions (handle multiple state updates + side effects)
   selectEntity: (entity: AgentInfo | WorkflowInfo) => void;
@@ -177,6 +187,13 @@ export const useDevUIStore = create<DevUIStore>()(
         oaiMode: {
           enabled: false,
           model: "gpt-4o-mini", // Default to cheaper model
+        },
+
+        // Server Meta State
+        uiMode: "developer", // Default to developer mode
+        serverCapabilities: {
+          tracing: false,
+          openai_proxy: false,
         },
 
         // ========================================
@@ -379,6 +396,16 @@ export const useDevUIStore = create<DevUIStore>()(
               pendingApprovals: [],
               debugEvents: [],
             };
+          }),
+
+        // ========================================
+        // Server Meta Actions
+        // ========================================
+
+        setServerMeta: (meta) =>
+          set({
+            uiMode: meta.uiMode,
+            serverCapabilities: meta.capabilities,
           }),
 
         // ========================================
