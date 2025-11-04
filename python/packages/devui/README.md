@@ -234,6 +234,7 @@ Given that DevUI offers an OpenAI Responses API, it internally maps messages and
 | `response.output_item.added` (ExecutorActionItem)*           | `ExecutorInvokedEvent`            | OpenAI   |
 | `response.output_item.done` (ExecutorActionItem)*            | `ExecutorCompletedEvent`          | OpenAI   |
 | `response.output_item.done` (ExecutorActionItem with error)* | `ExecutorFailedEvent`             | OpenAI   |
+| `response.output_item.added` (ResponseOutputMessage)         | `WorkflowOutputEvent`             | OpenAI   |
 | `response.workflow_event.complete`                           | `WorkflowEvent` (other)           | DevUI    |
 | `response.trace.complete`                                    | `WorkflowStatusEvent`             | DevUI    |
 | `response.trace.complete`                                    | `WorkflowWarningEvent`            | DevUI    |

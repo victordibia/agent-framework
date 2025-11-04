@@ -71,14 +71,15 @@ class EntityDiscovery:
         """
         return self._loaded_objects.get(entity_id)
 
-    async def load_entity(self, entity_id: str) -> Any:
-        """Load entity on-demand (lazy loading).
+    async def load_entity(self, entity_id: str, checkpoint_manager: Any = None) -> Any:
+        """Load entity on-demand and inject checkpoint storage for workflows.
 
         This method implements lazy loading by importing the entity module only when needed.
         In-memory entities are returned from cache immediately.
 
         Args:
             entity_id: Entity identifier
+            checkpoint_manager: Optional checkpoint manager for workflow storage injection
 
         Returns:
             Loaded entity object
@@ -108,8 +109,18 @@ class EntityDiscovery:
         else:
             raise ValueError(
                 f"Unsupported entity source: {entity_info.source}. "
-                f"Only 'directory' and 'in_memory' sources are supported."
+                f"Only 'directory' and 'in-memory' sources are supported."
             )
+
+        # Inject checkpoint storage for workflows that support checkpointing
+        if entity_info.type == "workflow" and entity_info.supports_checkpointing and checkpoint_manager:
+            # Get checkpoint storage adapter for this entity
+            checkpoint_storage = checkpoint_manager.get_checkpoint_storage(entity_id)
+
+            # Replace workflow's internal storage with our managed one
+            if hasattr(entity_obj, "_runner") and hasattr(entity_obj._runner, "context"):
+                entity_obj._runner.context._checkpoint_storage = checkpoint_storage
+                logger.info(f"Injected conversation-backed checkpoint storage for {entity_id}")
 
         # Enrich metadata with actual entity data
         # Don't pass entity_type if it's "unknown" - let inference determine the real type

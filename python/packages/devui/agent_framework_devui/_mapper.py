@@ -684,7 +684,65 @@ class MessageMapper:
 
                 return events
 
-            if event_class in ["WorkflowCompletedEvent", "WorkflowOutputEvent"]:
+            # Handle WorkflowOutputEvent separately to preserve output data
+            if event_class == "WorkflowOutputEvent":
+                output_data = getattr(event, "data", None)
+                source_executor_id = getattr(event, "source_executor_id", "unknown")
+
+                if output_data is not None:
+                    # Import required types
+                    from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+                    from openai.types.responses.response_output_item_added_event import ResponseOutputItemAddedEvent
+
+                    # Increment output index for each yield_output
+                    context["output_index"] = context.get("output_index", -1) + 1
+
+                    # Extract text from output data based on type
+                    text = None
+                    if hasattr(output_data, "__class__") and output_data.__class__.__name__ == "ChatMessage":
+                        # Handle ChatMessage (from Magentic and AgentExecutor with output_response=True)
+                        text = getattr(output_data, "text", None)
+                        if not text:
+                            # Fallback to string representation
+                            text = str(output_data)
+                    elif isinstance(output_data, str):
+                        # String output
+                        text = output_data
+                    else:
+                        # Object/dict/list → JSON string
+                        try:
+                            text = json.dumps(output_data, indent=2)
+                        except (TypeError, ValueError):
+                            # Fallback to string representation if not JSON serializable
+                            text = str(output_data)
+
+                    # Create output message with text content
+                    text_content = ResponseOutputText(type="output_text", text=text, annotations=[])
+
+                    output_message = ResponseOutputMessage(
+                        type="message",
+                        id=f"msg_{uuid4().hex[:8]}",
+                        role="assistant",
+                        content=[text_content],
+                        status="completed",
+                    )
+
+                    # Emit output_item.added for each yield_output
+                    logger.debug(
+                        f"WorkflowOutputEvent converted to output_item.added "
+                        f"(executor: {source_executor_id}, length: {len(text)})"
+                    )
+                    return [
+                        ResponseOutputItemAddedEvent(
+                            type="response.output_item.added",
+                            item=output_message,
+                            output_index=context["output_index"],
+                            sequence_number=self._next_sequence(context),
+                        )
+                    ]
+
+            # Handle WorkflowCompletedEvent - emit response.completed
+            if event_class == "WorkflowCompletedEvent":
                 workflow_id = context.get("workflow_id", str(uuid4()))
 
                 # Import Response type for proper construction
@@ -699,7 +757,7 @@ class MessageMapper:
                     object="response",
                     created_at=float(time.time()),
                     model=model_name,
-                    output=[],  # Output should be populated by this point from text streaming
+                    output=[],  # Output items already sent via output_item.added events
                     status="completed",
                     parallel_tool_calls=False,
                     tool_choice="none",
@@ -910,6 +968,128 @@ class MessageMapper:
                 )
 
                 return [trace_event]
+
+            # Handle Magentic-specific events
+            if event_class == "MagenticAgentDeltaEvent":
+                agent_id = getattr(event, "agent_id", "unknown_agent")
+                text = getattr(event, "text", None)
+
+                if text:
+                    events = []
+
+                    # Check if this is the first delta from this agent (need to emit executor marker)
+                    if context.get("current_executor_id") != agent_id:
+                        context["current_executor_id"] = agent_id
+                        context["output_index"] = context.get("output_index", -1) + 1
+
+                        # Emit ExecutorActionItem to mark which agent is streaming
+                        # This allows frontend to track per-agent output
+                        item_id = f"agent_{agent_id}_{uuid4().hex[:8]}"
+                        context[f"agent_item_{agent_id}"] = item_id
+
+                        executor_item = ExecutorActionItem(
+                            type="executor_action",
+                            id=item_id,
+                            executor_id=agent_id,  # Use agent_id as executor_id
+                            status="in_progress",
+                            metadata={"agent_type": "magentic"},
+                        )
+
+                        events.append(
+                            CustomResponseOutputItemAddedEvent(
+                                type="response.output_item.added",
+                                output_index=context["output_index"],
+                                sequence_number=self._next_sequence(context),
+                                item=executor_item,
+                            )
+                        )
+
+                    # Emit text delta event (same as AgentRunResponseUpdate)
+                    events.append(self._create_text_delta_event(text, context))
+                    return events
+
+                # For non-text deltas (function calls, etc.), emit as trace for debugging
+                return [
+                    ResponseTraceEventComplete(
+                        type="response.trace.completed",
+                        data={
+                            "trace_type": "magentic_delta",
+                            "agent_id": agent_id,
+                            "function_call_id": getattr(event, "function_call_id", None),
+                            "function_call_name": getattr(event, "function_call_name", None),
+                            "function_result_id": getattr(event, "function_result_id", None),
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                        span_id=f"magentic_delta_{uuid4().hex[:8]}",
+                        item_id=context["item_id"],
+                        output_index=context.get("output_index", 0),
+                        sequence_number=self._next_sequence(context),
+                    )
+                ]
+
+            if event_class == "MagenticAgentMessageEvent":
+                agent_id = getattr(event, "agent_id", "unknown_agent")
+                message = getattr(event, "message", None)
+
+                # Extract text from ChatMessage
+                text = None
+                if message and hasattr(message, "text"):
+                    text = message.text
+
+                if text:
+                    # Emit as output item for this agent
+                    from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+                    from openai.types.responses.response_output_item_added_event import ResponseOutputItemAddedEvent
+
+                    context["output_index"] = context.get("output_index", -1) + 1
+
+                    text_content = ResponseOutputText(type="output_text", text=text, annotations=[])
+
+                    output_message = ResponseOutputMessage(
+                        type="message",
+                        id=f"msg_{uuid4().hex[:8]}",
+                        role="assistant",
+                        content=[text_content],
+                        status="completed",
+                    )
+
+                    logger.debug(f"MagenticAgentMessageEvent from {agent_id} converted to output_item.added")
+                    return [
+                        ResponseOutputItemAddedEvent(
+                            type="response.output_item.added",
+                            item=output_message,
+                            output_index=context["output_index"],
+                            sequence_number=self._next_sequence(context),
+                        )
+                    ]
+
+            if event_class == "MagenticOrchestratorMessageEvent":
+                orchestrator_id = getattr(event, "orchestrator_id", "orchestrator")
+                message = getattr(event, "message", None)
+                kind = getattr(event, "kind", "unknown")
+
+                # Extract text from ChatMessage
+                text = None
+                if message and hasattr(message, "text"):
+                    text = message.text
+
+                # Emit as trace event for orchestrator messages (typically task ledger, instructions)
+                return [
+                    ResponseTraceEventComplete(
+                        type="response.trace.completed",
+                        data={
+                            "trace_type": "magentic_orchestrator",
+                            "orchestrator_id": orchestrator_id,
+                            "kind": kind,
+                            "text": text or str(message),
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                        span_id=f"magentic_orch_{uuid4().hex[:8]}",
+                        item_id=context["item_id"],
+                        output_index=context.get("output_index", 0),
+                        sequence_number=self._next_sequence(context),
+                    )
+                ]
 
             # For unknown/legacy events, still emit as workflow event for backward compatibility
             # Get event data and serialize if it's a SerializationMixin

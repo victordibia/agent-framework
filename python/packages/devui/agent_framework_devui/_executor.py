@@ -80,6 +80,11 @@ class AgentFrameworkExecutor:
         # Use provided conversation store or default to in-memory
         self.conversation_store = conversation_store or InMemoryConversationStore()
 
+        # Create checkpoint manager (wraps conversation store)
+        from ._conversations import CheckpointConversationManager
+
+        self.checkpoint_manager = CheckpointConversationManager(self.conversation_store)
+
     def _setup_tracing_provider(self) -> None:
         """Set up our own TracerProvider so we can add processors."""
         try:
@@ -203,7 +208,7 @@ class AgentFrameworkExecutor:
             entity_info = self.get_entity_info(entity_id)
 
             # Trigger lazy loading (will return from cache if already loaded)
-            entity_obj = await self.entity_discovery.load_entity(entity_id)
+            entity_obj = await self.entity_discovery.load_entity(entity_id, checkpoint_manager=self.checkpoint_manager)
 
             if not entity_obj:
                 raise EntityNotFoundError(f"Entity object for '{entity_id}' not found")
@@ -319,7 +324,7 @@ class AgentFrameworkExecutor:
     async def _execute_workflow(
         self, workflow: Any, request: AgentFrameworkRequest, trace_collector: Any
     ) -> AsyncGenerator[Any, None]:
-        """Execute Agent Framework workflow with trace collection.
+        """Execute Agent Framework workflow with checkpoint support via conversation items.
 
         Args:
             workflow: Workflow object to execute
@@ -330,140 +335,157 @@ class AgentFrameworkExecutor:
             Workflow events and trace events
         """
         try:
-            # Check if this is a HIL response continuation
+            entity_id = request.get_entity_id()
+
+            # Always use DevUI's conversation-backed checkpoint storage (overrides workflow's built-in storage)
+            checkpoint_storage = self.checkpoint_manager.get_checkpoint_storage(entity_id)
+
+            # Check for HIL responses first
             hil_responses = self._extract_workflow_hil_responses(request.input)
 
+            # Determine checkpoint_id (explicit or auto-latest for HIL responses)
+            checkpoint_id = None
+            if request.extra_body and "checkpoint_id" in request.extra_body:
+                checkpoint_id = request.extra_body["checkpoint_id"]
+                logger.debug(f"Using explicit checkpoint_id from request: {checkpoint_id}")
+            elif hil_responses:
+                # Only auto-resume from latest checkpoint when we have HIL responses
+                # Regular "Run" clicks should start fresh, not resume from checkpoints
+                checkpoints = await checkpoint_storage.list_checkpoints(workflow_id=workflow.id)
+                if checkpoints:
+                    latest = max(checkpoints, key=lambda cp: cp.timestamp)
+                    checkpoint_id = latest.checkpoint_id
+                    logger.info(f"Auto-resuming from latest checkpoint for HIL response: {checkpoint_id}")
+                else:
+                    logger.warning(f"HIL responses received but no checkpoints found for workflow {workflow.id}")
+
             if hil_responses:
-                # HIL continuation mode - resume from checkpoint
+                # HIL continuation mode requires checkpointing
+                if not checkpoint_id:
+                    error_msg = (
+                        "Cannot process HIL responses without a checkpoint. "
+                        "Workflows using HIL must be configured with .with_checkpointing() "
+                        "and a checkpoint must exist before sending responses."
+                    )
+                    logger.error(error_msg)
+                    yield {"type": "error", "message": error_msg}
+                    return
+
                 logger.info(f"Resuming workflow with HIL responses for {len(hil_responses)} request(s)")
 
-                # Unwrap primitive responses that were wrapped in {response: value} format
-                # The UI wraps primitive types in an object for form compatibility
+                # Unwrap primitive responses if they're wrapped in {response: value} format
+                from ._utils import parse_input_for_type
+
                 unwrapped_responses = {}
                 for request_id, response_value in hil_responses.items():
                     if isinstance(response_value, dict) and "response" in response_value:
-                        # Unwrap: {response: "value"} -> "value"
-                        unwrapped_responses[request_id] = response_value["response"]
-                    else:
-                        # Keep as-is for complex response objects
-                        unwrapped_responses[request_id] = response_value
+                        response_value = response_value["response"]
+                    unwrapped_responses[request_id] = response_value
 
                 hil_responses = unwrapped_responses
 
-                # Get checkpoint_id from extra_body or conversation metadata
-                checkpoint_id = None
-                if request.extra_body and "checkpoint_id" in request.extra_body:
-                    # Explicit checkpoint_id in request
-                    checkpoint_id = request.extra_body["checkpoint_id"]
-                    logger.info(f"Using checkpoint_id from extra_body: {checkpoint_id}")
-                else:
-                    # Fall back to conversation metadata
-                    conversation_id = request.get_conversation_id()
-                    if conversation_id:
-                        checkpoint_id = await self._get_checkpoint_for_conversation(conversation_id)
-                    else:
-                        logger.warning("No conversation_id in HIL resume request - cannot retrieve checkpoint")
+                # NOTE: Two-step approach for stateless HTTP (framework limitation):
+                # 1. Restore checkpoint to load pending requests into workflow's in-memory state
+                # 2. Then send responses using send_responses_streaming
+                # Future: Framework should support run_stream(checkpoint_id, responses) in single call
+                # (checkpoint_id is guaranteed to exist due to earlier validation)
+                logger.debug(f"Restoring checkpoint {checkpoint_id} then sending HIL responses")
 
-                if checkpoint_id:
-                    # Resume workflow from checkpoint with HIL responses
-                    logger.info(f"Resuming workflow from checkpoint {checkpoint_id}")
+                try:
+                    # Step 1: Restore checkpoint to populate workflow's in-memory pending requests
+                    restored = False
+                    async for _event in workflow.run_stream(
+                        checkpoint_id=checkpoint_id, checkpoint_storage=checkpoint_storage
+                    ):
+                        restored = True
+                        break  # Stop immediately after restoration, don't process events
 
-                    # Reset running flags - breaking from initial stream leaves them True
-                    # This prevents run_stream_from_checkpoint from executing
+                    if not restored:
+                        raise RuntimeError("Checkpoint restoration did not yield any events")
+
+                    # Reset running flags so we can call send_responses_streaming
                     if hasattr(workflow, "_is_running"):
                         workflow._is_running = False
                     if hasattr(workflow, "_runner") and hasattr(workflow._runner, "_running"):
                         workflow._runner._running = False
 
+                    # Extract response types from restored workflow and convert responses to proper types
                     try:
-                        async for event in workflow.run_stream_from_checkpoint(checkpoint_id, responses=hil_responses):
-                            # Yield any pending trace events first
-                            for trace_event in trace_collector.get_pending_events():
-                                yield trace_event
+                        if hasattr(workflow, "_runner") and hasattr(workflow._runner, "context"):
+                            runner_context = workflow._runner.context
+                            pending_requests_dict = await runner_context.get_pending_request_info_events()
 
-                            # Then yield the workflow event
-                            yield event
+                            converted_responses = {}
+                            for request_id, response_value in hil_responses.items():
+                                if request_id in pending_requests_dict:
+                                    pending_request = pending_requests_dict[request_id]
+                                    if hasattr(pending_request, "response_type"):
+                                        response_type = pending_request.response_type
+                                        try:
+                                            response_value = parse_input_for_type(response_value, response_type)
+                                            logger.debug(
+                                                f"Converted HIL response for {request_id} to {type(response_value)}"
+                                            )
+                                        except Exception as e:
+                                            logger.warning(f"Failed to convert HIL response for {request_id}: {e}")
 
-                    except ValueError as e:
-                        error_msg = f"Cannot resume workflow: {e}. Workflow must be built with .with_checkpointing()"
-                        logger.error(error_msg)
-                        yield {"type": "error", "message": error_msg}
-                else:
-                    error_msg = "No checkpoint found for conversation - cannot resume workflow"
+                                converted_responses[request_id] = response_value
+
+                            hil_responses = converted_responses
+                    except Exception as e:
+                        logger.warning(f"Could not convert HIL responses to proper types: {e}")
+
+                    # Step 2: Now send responses to the in-memory workflow
+                    async for event in workflow.send_responses_streaming(hil_responses):
+                        for trace_event in trace_collector.get_pending_events():
+                            yield trace_event
+                        yield event
+
+                except (AttributeError, ValueError, RuntimeError) as e:
+                    error_msg = f"Failed to send HIL responses: {e}"
                     logger.error(error_msg)
                     yield {"type": "error", "message": error_msg}
-            else:
-                # Check if explicit checkpoint_id provided (resume without responses)
-                checkpoint_id = None
-                if request.extra_body and "checkpoint_id" in request.extra_body:
-                    checkpoint_id = request.extra_body["checkpoint_id"]
-                    logger.info(f"Resuming from explicit checkpoint: {checkpoint_id}")
 
-                if checkpoint_id:
-                    # Resume from checkpoint without responses (will re-emit RequestInfoEvent)
-                    # Reset running flags
-                    if hasattr(workflow, "_is_running"):
-                        workflow._is_running = False
-                    if hasattr(workflow, "_runner") and hasattr(workflow._runner, "_running"):
-                        workflow._runner._running = False
+            elif checkpoint_id:
+                # Resume from checkpoint (explicit or auto-latest) using unified API
+                logger.info(f"Resuming workflow from checkpoint: {checkpoint_id}")
 
-                    try:
-                        async for event in workflow.run_stream_from_checkpoint(checkpoint_id):
-                            # Enrich RequestInfoEvent if we see it
-                            if isinstance(event, RequestInfoEvent):
-                                self._enrich_request_info_event_with_response_schema(event, workflow)
-
-                            # Yield any pending trace events first
-                            for trace_event in trace_collector.get_pending_events():
-                                yield trace_event
-
-                            # Yield the workflow event
-                            yield event
-
-                            # Break at RequestInfoEvent (will show modal)
-                            if isinstance(event, RequestInfoEvent):
-                                break
-                    except ValueError as e:
-                        error_msg = f"Cannot resume from checkpoint: {e}"
-                        logger.error(error_msg)
-                        yield {"type": "error", "message": error_msg}
-                else:
-                    # Normal execution mode - start fresh
-                    input_data = request.input
-                    logger.debug(f"Using input field: {type(input_data)}")
-
-                    # Parse input based on workflow's expected input type
-                    parsed_input = await self._parse_workflow_input(workflow, input_data)
-
-                    logger.debug(f"Executing workflow with parsed input type: {type(parsed_input)}")
-
-                    # Use Agent Framework workflow's native streaming
-                    async for event in workflow.run_stream(parsed_input):
-                        # Handle RequestInfoEvent - save checkpoint and enrich with response schema
+                try:
+                    async for event in workflow.run_stream(
+                        checkpoint_id=checkpoint_id, checkpoint_storage=checkpoint_storage
+                    ):
                         if isinstance(event, RequestInfoEvent):
-                            conversation_id = request.get_conversation_id()
-                            entity_id = request.get_entity_id()
-                            if conversation_id and entity_id:
-                                await self._save_checkpoint_for_conversation(conversation_id, workflow, entity_id)
-                            else:
-                                logger.warning(
-                                    "RequestInfoEvent without conversation_id or entity_id - checkpoint not saved"
-                                )
-
-                            # Enrich event with response schema for UI form rendering
                             self._enrich_request_info_event_with_response_schema(event, workflow)
 
-                        # Yield any pending trace events first
                         for trace_event in trace_collector.get_pending_events():
                             yield trace_event
 
-                        # Yield the workflow event
                         yield event
 
-                        # Break after RequestInfoEvent to pause workflow execution
-                        # Workflow will resume via run_stream_from_checkpoint when user responds
                         if isinstance(event, RequestInfoEvent):
                             break
+
+                except ValueError as e:
+                    error_msg = f"Cannot resume from checkpoint: {e}"
+                    logger.error(error_msg)
+                    yield {"type": "error", "message": error_msg}
+
+            else:
+                # First run - pass DevUI's checkpoint storage to enable checkpointing
+                logger.info("Starting workflow fresh with DevUI checkpoint storage")
+                parsed_input = await self._parse_workflow_input(workflow, request.input)
+
+                async for event in workflow.run_stream(parsed_input, checkpoint_storage=checkpoint_storage):
+                    if isinstance(event, RequestInfoEvent):
+                        self._enrich_request_info_event_with_response_schema(event, workflow)
+
+                    for trace_event in trace_collector.get_pending_events():
+                        yield trace_event
+
+                    yield event
+
+                    if isinstance(event, RequestInfoEvent):
+                        break
 
         except Exception as e:
             logger.error(f"Error in workflow execution: {e}")
@@ -769,79 +791,6 @@ class AgentFrameworkExecutor:
 
         return conversation
 
-    async def _save_checkpoint_for_conversation(self, conversation_id: str, workflow: Any, entity_id: str) -> None:
-        """Save the latest checkpoint_id for a workflow to conversation metadata.
-
-        This uses a hacky approach to get checkpoint storage from workflow since there's no public API.
-        The workflow must have been built with .with_checkpointing() for this to work.
-
-        Args:
-            conversation_id: Conversation ID
-            workflow: Workflow object that has checkpoints
-            entity_id: Entity ID (e.g., "spam_workflow") for metadata filtering
-        """
-        try:
-            # Access checkpoint storage via _runner (no public API available)
-            # This is safe because we only read from it, and it's the only way
-            if not hasattr(workflow, "_runner") or not hasattr(workflow._runner, "context"):
-                logger.debug(f"Workflow {workflow.id} doesn't have expected structure - skipping checkpoint save")
-                return
-
-            runner_context = workflow._runner.context
-            if not hasattr(runner_context, "_checkpoint_storage") or runner_context._checkpoint_storage is None:
-                logger.debug(f"Workflow {workflow.id} doesn't have checkpointing enabled - skipping checkpoint save")
-                return
-
-            checkpoint_storage = runner_context._checkpoint_storage
-            checkpoints = await checkpoint_storage.list_checkpoints(workflow_id=workflow.id)
-
-            if not checkpoints:
-                logger.debug(f"No checkpoints found for workflow {workflow.id}")
-                return
-
-            # Get latest checkpoint
-            latest_checkpoint = max(checkpoints, key=lambda cp: cp.timestamp)
-            checkpoint_id = latest_checkpoint.checkpoint_id
-
-            # Save checkpoint_id to conversation metadata
-            # Use entity_id (not workflow.id) so frontend can filter by agent_id
-            conversation = self._get_or_create_conversation(conversation_id, entity_id)
-            if conversation.metadata is None:
-                conversation.metadata = {}
-            conversation.metadata["checkpoint_id"] = checkpoint_id
-            # Also store workflow_id for backward compatibility
-            conversation.metadata["workflow_id"] = workflow.id
-
-            logger.info(f"Saved checkpoint {checkpoint_id} for conversation {conversation_id}")
-
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint for conversation {conversation_id}: {e}")
-
-    async def _get_checkpoint_for_conversation(self, conversation_id: str) -> str | None:
-        """Retrieve the checkpoint_id from conversation metadata.
-
-        Args:
-            conversation_id: Conversation ID
-
-        Returns:
-            Checkpoint ID if found, None otherwise
-        """
-        try:
-            conversation = self.conversation_store.get_conversation(conversation_id)
-            if conversation and conversation.metadata:
-                # metadata is typed as 'object' in OpenAI SDK, cast to dict for access
-                metadata = conversation.metadata
-                if isinstance(metadata, dict):
-                    # dict.get() returns Any, so we explicitly type it
-                    checkpoint_id: str | None = metadata.get("checkpoint_id")  # type: ignore[assignment]
-                    if checkpoint_id:
-                        logger.debug(f"Retrieved checkpoint {checkpoint_id} for conversation {conversation_id}")
-                        return checkpoint_id
-        except Exception as e:
-            logger.error(f"Failed to retrieve checkpoint for conversation {conversation_id}: {e}")
-
-        return None
-
     def _parse_structured_workflow_input(self, workflow: Any, input_data: dict[str, Any]) -> Any:
         """Parse structured input data for workflow execution.
 
@@ -955,10 +904,13 @@ class AgentFrameworkExecutor:
 
                 # Attach response_schema to event for mapper to include in output
                 event._response_schema = response_schema
-                logger.info(f"Successfully extracted response schema for {request_type.__name__}: {response_schema}")
+
+                logger.debug(f"Extracted response schema for {request_type.__name__}: {response_schema}")
             else:
                 # Even if extraction fails, provide a reasonable default to avoid warnings
-                logger.info(f"Could not extract response type for {request_type.__name__}, using default string schema")
+                logger.debug(
+                    f"Could not extract response type for {request_type.__name__}, using default string schema"
+                )
                 response_schema = {"type": "string"}
                 event._response_schema = response_schema
 

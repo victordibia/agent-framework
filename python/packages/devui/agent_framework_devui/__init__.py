@@ -8,6 +8,7 @@ import webbrowser
 from collections.abc import Callable
 from typing import Any
 
+from ._conversations import CheckpointConversationManager
 from ._server import DevServer
 from .models import AgentFrameworkRequest, OpenAIError, OpenAIResponse, ResponseStreamEvent
 from .models._discovery_models import DiscoveryResponse, EntityInfo, EnvVarRequirement
@@ -212,6 +213,7 @@ def main() -> None:
 # Export main public API
 __all__ = [
     "AgentFrameworkRequest",
+    "CheckpointConversationManager",
     "DevServer",
     "DiscoveryResponse",
     "EntityInfo",

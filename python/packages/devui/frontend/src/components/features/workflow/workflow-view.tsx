@@ -39,6 +39,13 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type DebugEventHandler = (event: ExtendedResponseStreamEvent | "clear") => void;
 
@@ -451,19 +458,30 @@ export function WorkflowView({
         // Load checkpoints if workflow supports them
         if (info.supports_checkpointing) {
           try {
-            // Use existing conversation API to get checkpoints
+            // Find checkpoint container conversation
             const { data: conversations } = await apiClient.listConversations(selectedWorkflow.id);
+            const checkpointConv = conversations.find(
+              conv => conv.metadata?.type === "checkpoint_container"
+            );
 
-            // Filter conversations that have checkpoint_id in metadata
-            const checkpointConversations = conversations
-              .filter(conv => conv.metadata?.checkpoint_id)
-              .map(conv => ({
-                checkpoint_id: conv.metadata!.checkpoint_id!,
-                workflow_id: selectedWorkflow.id,
-                timestamp: conv.created_at,
-              }));
+            if (checkpointConv) {
+              // List checkpoint items from conversation
+              const { data: items } = await apiClient.listConversationItems(checkpointConv.id);
 
-            setAvailableCheckpoints(checkpointConversations);
+              // Extract checkpoints
+              const checkpoints = items
+                .filter((item: any) => item.type === "checkpoint")
+                .map((item: any) => ({
+                  checkpoint_id: item.checkpoint_data.checkpoint_id,
+                  workflow_id: item.checkpoint_data.workflow_id,
+                  timestamp: item.created_at,
+                }));
+
+              setAvailableCheckpoints(checkpoints);
+            } else {
+              // No checkpoint conversation yet (will be created on first run)
+              setAvailableCheckpoints([]);
+            }
           } catch (error) {
             console.error("Error loading checkpoints:", error);
             setAvailableCheckpoints([]);
@@ -695,6 +713,8 @@ export function WorkflowView({
           // Handle new standard OpenAI events
           if (openAIEvent.type === "response.output_item.added") {
             const item = (openAIEvent as any).item;
+
+            // Handle executor action items
             if (item && item.type === "executor_action" && item.executor_id) {
               currentStreamingExecutor.current = item.executor_id;
               // Initialize output for this executor if not exists
@@ -702,12 +722,39 @@ export function WorkflowView({
                 executorOutputs.current[item.executor_id] = "";
               }
             }
+
+            // Handle workflow output messages (from ctx.yield_output)
+            if (item && item.type === "message" && item.content) {
+              // Extract text from message content
+              for (const content of item.content) {
+                if (content.type === "output_text" && content.text) {
+                  // Append to workflow result (support multiple yield_output calls)
+                  setWorkflowResult((prev) => {
+                    if (prev && prev.length > 0) {
+                      // If there's existing output, add separator
+                      return prev + "\n\n" + content.text;
+                    }
+                    return content.text;
+                  });
+
+                  // Try to parse as JSON for structured metadata
+                  try {
+                    const parsed = JSON.parse(content.text);
+                    if (typeof parsed === "object" && parsed !== null) {
+                      workflowMetadata.current = parsed;
+                    }
+                  } catch {
+                    // Not JSON, keep as text
+                  }
+                }
+              }
+            }
           }
 
           // Handle workflow completion
           if (openAIEvent.type === "response.completed") {
             // Workflow completed successfully
-            // Final output is already in workflowResult from text streaming
+            // Final output is already in workflowResult from text streaming or output_item.added
           }
 
           // Handle workflow failure
@@ -824,12 +871,28 @@ export function WorkflowView({
               },
             ]);
 
-            // Initialize responses with empty object
-            // The request_data is shown as readonly context in the modal
-            // The user fills in the actual response based on response_schema
+            // Initialize responses with default values from schema
+            // For enum fields, set to first option; for other fields with defaults, use those
+            const schema = hilEvent.request_schema as unknown as JSONSchemaProperty;
+            const defaultValues: Record<string, unknown> = {};
+
+            if (schema.properties) {
+              Object.entries(schema.properties).forEach(([fieldName, fieldSchema]) => {
+                const field = fieldSchema as JSONSchemaProperty;
+                // Set default for enum fields to first option
+                if (field.enum && field.enum.length > 0) {
+                  defaultValues[fieldName] = field.enum[0];
+                }
+                // Use explicit default value if provided
+                else if (field.default !== undefined) {
+                  defaultValues[fieldName] = field.default;
+                }
+              });
+            }
+
             setHilResponses((prev) => ({
               ...prev,
-              [hilEvent.request_id]: {},
+              [hilEvent.request_id]: defaultValues,
             }));
 
             // Auto-show modal when first request arrives
@@ -838,13 +901,10 @@ export function WorkflowView({
             }
           }
 
-          // Handle errors
+          // Handle errors (ResponseErrorEvent - fallback error format)
           if (openAIEvent.type === "error") {
-            setWorkflowError(
-              "error" in openAIEvent
-                ? String(openAIEvent.error)
-                : "Unknown error"
-            );
+            const errorEvent = openAIEvent as import("@/types/openai").ResponseErrorEvent;
+            setWorkflowError(errorEvent.message || "Unknown error");
             break;
           }
         }
@@ -912,6 +972,38 @@ export function WorkflowView({
 
         // Pass to debug panel
         onDebugEvent(openAIEvent);
+
+        // Handle workflow output items (from ctx.yield_output)
+        if (openAIEvent.type === "response.output_item.added") {
+          const item = (openAIEvent as any).item;
+
+          // Handle workflow output messages
+          if (item && item.type === "message" && item.content) {
+            // Extract text from message content
+            for (const content of item.content) {
+              if (content.type === "output_text" && content.text) {
+                // Append to workflow result (support multiple yield_output calls)
+                setWorkflowResult((prev) => {
+                  if (prev && prev.length > 0) {
+                    // If there's existing output, add separator
+                    return prev + "\n\n" + content.text;
+                  }
+                  return content.text;
+                });
+
+                // Try to parse as JSON for structured metadata
+                try {
+                  const parsed = JSON.parse(content.text);
+                  if (typeof parsed === "object" && parsed !== null) {
+                    workflowMetadata.current = parsed;
+                  }
+                } catch {
+                  // Not JSON, keep as text
+                }
+              }
+            }
+          }
+        }
 
         // Handle text output
         if (
@@ -1023,25 +1115,62 @@ export function WorkflowView({
           {/* Run Workflow Controls */}
           {workflowInfo && (
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-shrink-0">
-              {/* Checkpoint Selector */}
-              {workflowInfo.supports_checkpointing && (
-                <select
-                  value={selectedCheckpointId || ""}
-                  onChange={(e) => setSelectedCheckpointId(e.target.value || null)}
-                  className="px-3 py-2 border rounded-md text-sm bg-background"
+              {/* Checkpoint Selector - only show if checkpoints exist */}
+              {workflowInfo.supports_checkpointing && availableCheckpoints.length > 0 && (
+                <Select
+                  value={selectedCheckpointId || "__none__"}
+                  onValueChange={(value) => setSelectedCheckpointId(value === "__none__" ? null : value)}
                   disabled={isStreaming}
                 >
-                  <option value="">
-                    {availableCheckpoints.length === 0
-                      ? "No Checkpoints (Start Fresh)"
-                      : "Start Fresh (No Checkpoint)"}
-                  </option>
-                  {availableCheckpoints.map((cp) => (
-                    <option key={cp.checkpoint_id} value={cp.checkpoint_id}>
-                      Checkpoint {cp.checkpoint_id.slice(0, 8)}... - {new Date(cp.timestamp * 1000).toLocaleString()}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="w-full sm:w-64">
+                    <SelectValue
+                      placeholder={
+                        availableCheckpoints.length === 0
+                          ? "No Checkpoints"
+                          : "Select Checkpoint"
+                      }
+                    >
+                      {selectedCheckpointId ? (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span>
+                            Checkpoint {selectedCheckpointId.slice(0, 8)}...
+                          </span>
+                          {availableCheckpoints.find(cp => cp.checkpoint_id === selectedCheckpointId) && (
+                            <>
+                              <span className="text-muted-foreground">•</span>
+                              <span className="text-muted-foreground">
+                                {new Date(
+                                  availableCheckpoints.find(cp => cp.checkpoint_id === selectedCheckpointId)!.timestamp * 1000
+                                ).toLocaleString()}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        availableCheckpoints.length === 0
+                          ? "No Checkpoints (Start Fresh)"
+                          : "Start Fresh (No Checkpoint)"
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      <div className="flex items-center justify-between w-full">
+                        <span>Start Fresh (No Checkpoint)</span>
+                      </div>
+                    </SelectItem>
+                    {availableCheckpoints.map((cp) => (
+                      <SelectItem key={cp.checkpoint_id} value={cp.checkpoint_id}>
+                        <div className="flex items-center justify-between w-full">
+                          <span>Checkpoint {cp.checkpoint_id.slice(0, 8)}...</span>
+                          <span className="text-xs text-muted-foreground ml-3">
+                            {new Date(cp.timestamp * 1000).toLocaleString()}
+                          </span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               )}
 
               <RunWorkflowButton

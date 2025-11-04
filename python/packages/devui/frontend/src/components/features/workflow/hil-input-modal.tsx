@@ -49,7 +49,7 @@ export function HilInputModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader className="pb-4">
+        <DialogHeader className="px-6 pt-6 pb-4">
           <DialogTitle className="flex items-center gap-2">
             <MessageCircle className="w-5 h-5" />
             Workflow Requires Input ({requests.length} request
@@ -90,6 +90,18 @@ export function HilInputModal({
                           </div>
                         ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Show expected response hint if available */}
+                {req.request_schema?.description && (
+                  <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-md">
+                    <p className="text-xs font-medium text-blue-900 dark:text-blue-100 mb-1">
+                      Expected Response:
+                    </p>
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                      {req.request_schema.description}
+                    </p>
                   </div>
                 )}
 
