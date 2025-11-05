@@ -23,6 +23,7 @@ import type { ExecutorState } from "./executor-node";
 interface ExecutorRun {
   executorId: string;
   executorName: string;
+  itemId: string; // Unique ID for this specific run
   state: ExecutorState;
   output: string;
   error?: string;
@@ -32,7 +33,7 @@ interface ExecutorRun {
 
 interface ExecutionTimelineProps {
   events: ExtendedResponseStreamEvent[];
-  executorOutputs: Record<string, string>;
+  itemOutputs: Record<string, string>;
   currentExecutorId: string | null;
   isStreaming: boolean;
   onExecutorClick?: (executorId: string) => void;
@@ -175,7 +176,7 @@ function ExecutorRunItem({
 
 export function ExecutionTimeline({
   events,
-  executorOutputs,
+  itemOutputs,
   currentExecutorId,
   isStreaming,
   onExecutorClick,
@@ -216,17 +217,19 @@ export function ExecutionTimeline({
 
       // Handle new standard OpenAI events
       if (event.type === "response.output_item.added") {
-        const item = (event as { item?: { type?: string; executor_id?: string; created_at?: number } }).item;
-        if (item && item.type === "executor_action" && item.executor_id) {
+        const item = (event as { item?: { type?: string; executor_id?: string; id?: string; created_at?: number } }).item;
+        if (item && item.type === "executor_action" && item.executor_id && item.id) {
           const executorId = item.executor_id;
+          const itemId = item.id;
           const runNumber = (runCount.get(executorId) || 0) + 1;
           runCount.set(executorId, runNumber);
 
           runs.push({
             executorId,
             executorName: executorId,
+            itemId,
             state: "running",
-            output: executorOutputs[executorId] || "",
+            output: itemOutputs[itemId] || "",
             timestamp: uiTimestamp,
             runNumber,
           });
@@ -235,26 +238,27 @@ export function ExecutionTimeline({
 
       // Handle completion events
       if (event.type === "response.output_item.done") {
-        const item = (event as { item?: { type?: string; executor_id?: string; status?: string; error?: string } }).item;
-        if (item && item.type === "executor_action" && item.executor_id) {
-          const executorId = item.executor_id;
-          const existingRun = runs.find(
-            (r) => r.executorId === executorId && r.state === "running"
-          );
-        if (existingRun) {
-          existingRun.state =
-            item.status === "completed"
-              ? "completed"
-              : item.status === "failed"
-              ? "failed"
-              : "completed";
-          existingRun.output = executorOutputs[executorId] || "";
-          if (item.status === "failed" && item.error) {
-            existingRun.error = item.error;
+        const item = (event as { item?: { type?: string; executor_id?: string; id?: string; status?: string; error?: string } }).item;
+        if (item && item.type === "executor_action" && item.executor_id && item.id) {
+          const itemId = item.id;
+          // Find the run by ITEM ID (not executor ID!) to handle multiple runs correctly
+          const existingRun = runs.find((r) => r.itemId === itemId);
+
+          if (existingRun) {
+            existingRun.state =
+              item.status === "completed"
+                ? "completed"
+                : item.status === "failed"
+                ? "failed"
+                : "completed";
+            // Use item-specific output, not executor-wide output
+            existingRun.output = itemOutputs[itemId] || "";
+            if (item.status === "failed" && item.error) {
+              existingRun.error = item.error;
+            }
           }
         }
       }
-    }
 
     // Fallback support for workflow_event format (used for unhandled event types and status/warning/error events)
     if (
@@ -272,29 +276,43 @@ export function ExecutionTimeline({
         const runNumber = (runCount.get(executorId) || 0) + 1;
         runCount.set(executorId, runNumber);
 
+        // Create synthetic item ID for fallback format (no real item.id from backend)
+        const syntheticItemId = `fallback_${executorId}_${uiTimestamp}`;
+
         runs.push({
           executorId,
           executorName: executorId,
+          itemId: syntheticItemId,
           state: "running",
-          output: executorOutputs[executorId] || "",
+          output: itemOutputs[syntheticItemId] || "",
           timestamp: uiTimestamp,
           runNumber,
         });
       } else if (eventType === "ExecutorCompletedEvent") {
-        const existingRun = runs.find(
-          (r) => r.executorId === executorId && r.state === "running"
-        );
+        // Find the most recent running instance of this executor (search from end)
+        let existingRun: ExecutorRun | undefined;
+        for (let i = runs.length - 1; i >= 0; i--) {
+          if (runs[i].executorId === executorId && runs[i].state === "running") {
+            existingRun = runs[i];
+            break;
+          }
+        }
         if (existingRun) {
           existingRun.state = "completed";
-          existingRun.output = executorOutputs[executorId] || "";
+          existingRun.output = itemOutputs[existingRun.itemId] || "";
         }
       } else if (
         eventType?.includes("Error") ||
         eventType?.includes("Failed")
       ) {
-        const existingRun = runs.find(
-          (r) => r.executorId === executorId && r.state === "running"
-        );
+        // Find the most recent running instance of this executor (search from end)
+        let existingRun: ExecutorRun | undefined;
+        for (let i = runs.length - 1; i >= 0; i--) {
+          if (runs[i].executorId === executorId && runs[i].state === "running") {
+            existingRun = runs[i];
+            break;
+          }
+        }
         if (existingRun) {
           existingRun.state = "failed";
           existingRun.error =
@@ -304,16 +322,17 @@ export function ExecutionTimeline({
     }
   });
 
-    // Update outputs for running executors
+    // Update outputs for running executors using item-specific outputs
+    // This ensures each run gets its own output, even for multiple runs of the same executor
     runs.forEach((run) => {
-      if (run.state === "running" && executorOutputs[run.executorId]) {
-        run.output = executorOutputs[run.executorId];
+      if (run.state === "running" && itemOutputs[run.itemId]) {
+        run.output = itemOutputs[run.itemId];
       }
     });
 
     return { executorRuns: runs, executorRunCount: runCount };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events, executorOutputs, updateTrigger]);
+  }, [events, itemOutputs, updateTrigger]);
 
   // Auto-expand running executors
   useEffect(() => {

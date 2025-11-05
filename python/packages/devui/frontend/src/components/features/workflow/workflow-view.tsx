@@ -290,9 +290,10 @@ export function WorkflowView({
   >({});
   const [showHilModal, setShowHilModal] = useState(false);
 
-  // Track per-executor outputs and workflow metadata
-  const executorOutputs = useRef<Record<string, string>>({});
-  const currentStreamingExecutor = useRef<string | null>(null);
+  // Track per-item outputs (keyed by item.id, not executor_id to handle multiple runs)
+  const itemOutputs = useRef<Record<string, string>>({});
+  const currentStreamingItemId = useRef<string | null>(null);
+  const itemIdToExecutorId = useRef<Record<string, string>>({});
   const workflowMetadata = useRef<Record<string, unknown> | null>(null);
 
   // Conversation/Session management for workflows (enables checkpoint resume)
@@ -445,8 +446,9 @@ export function WorkflowView({
     setSelectedExecutorId(null);
     setShowTimeline(false);
     setWorkflowResult("");
-    executorOutputs.current = {};
-    currentStreamingExecutor.current = null;
+    itemOutputs.current = {};
+    itemIdToExecutorId.current = {};
+    currentStreamingItemId.current = null;
     workflowMetadata.current = null;
 
     // Generate conversation_id ONLY if we don't have one OR workflow ID changed
@@ -571,10 +573,11 @@ export function WorkflowView({
       setIsStreaming(true);
       setOpenAIEvents([]); // Clear previous OpenAI events for new execution
 
-      // Clear per-executor outputs and metadata for new run
+      // Clear per-item outputs and metadata for new run
       setWorkflowResult("");
-      executorOutputs.current = {};
-      currentStreamingExecutor.current = null;
+      itemOutputs.current = {};
+      itemIdToExecutorId.current = {};
+      currentStreamingItemId.current = null;
       workflowMetadata.current = null;
 
       // Clear debug panel events for new workflow run
@@ -631,11 +634,14 @@ export function WorkflowView({
             const item = (openAIEvent as any).item;
 
             // Handle executor action items
-            if (item && item.type === "executor_action" && item.executor_id) {
-              currentStreamingExecutor.current = item.executor_id;
-              // Initialize output for this executor if not exists
-              if (!executorOutputs.current[item.executor_id]) {
-                executorOutputs.current[item.executor_id] = "";
+            if (item && item.type === "executor_action" && item.executor_id && item.id) {
+              // Track this item ID as the current streaming target
+              currentStreamingItemId.current = item.id;
+              // Map item ID to executor ID for later lookup
+              itemIdToExecutorId.current[item.id] = item.executor_id;
+              // Initialize output for this specific item (not executor!)
+              if (!itemOutputs.current[item.id]) {
+                itemOutputs.current[item.id] = "";
               }
             }
 
@@ -690,15 +696,18 @@ export function WorkflowView({
               executor_id?: string | null;
             };
 
-            // Track when executor starts (to know which executor is streaming)
+            // Track when executor starts (fallback for old workflow_event format)
             if (
               data.event_type === "ExecutorInvokedEvent" &&
               data.executor_id
             ) {
-              currentStreamingExecutor.current = data.executor_id;
-              // Initialize output for this executor if not exists
-              if (!executorOutputs.current[data.executor_id]) {
-                executorOutputs.current[data.executor_id] = "";
+              // Create synthetic item ID for fallback format (no real item.id available)
+              const syntheticItemId = `fallback_${data.executor_id}_${Date.now()}`;
+              currentStreamingItemId.current = syntheticItemId;
+              itemIdToExecutorId.current[syntheticItemId] = data.executor_id;
+              // Initialize output for this item
+              if (!itemOutputs.current[syntheticItemId]) {
+                itemOutputs.current[syntheticItemId] = "";
               }
             }
 
@@ -712,27 +721,27 @@ export function WorkflowView({
               if (typeof data.data === "object") {
                 workflowMetadata.current = data.data as Record<string, unknown>;
               }
-              currentStreamingExecutor.current = null;
+              currentStreamingItemId.current = null;
             }
           }
 
-          // Handle text output - assign to current executor
+          // Handle text output - assign to current item (not executor!)
           if (
             openAIEvent.type === "response.output_text.delta" &&
             "delta" in openAIEvent &&
             openAIEvent.delta
           ) {
-            // Determine which executor owns this text
-            const executorId = currentStreamingExecutor.current;
+            // Determine which ITEM (specific run) owns this text
+            const itemId = currentStreamingItemId.current;
 
-            if (executorId) {
-              // Initialize executor output if needed
-              if (!executorOutputs.current[executorId]) {
-                executorOutputs.current[executorId] = "";
+            if (itemId) {
+              // Initialize item output if needed
+              if (!itemOutputs.current[itemId]) {
+                itemOutputs.current[itemId] = "";
               }
 
-              // Append to specific executor's output
-              executorOutputs.current[executorId] += openAIEvent.delta;
+              // Append to specific ITEM's output (not all runs of this executor!)
+              itemOutputs.current[itemId] += openAIEvent.delta;
             }
           }
 
@@ -868,6 +877,15 @@ export function WorkflowView({
         if (openAIEvent.type === "response.output_item.added") {
           const item = (openAIEvent as any).item;
 
+          // Handle executor action items
+          if (item && item.type === "executor_action" && item.executor_id && item.id) {
+            currentStreamingItemId.current = item.id;
+            itemIdToExecutorId.current[item.id] = item.executor_id;
+            if (!itemOutputs.current[item.id]) {
+              itemOutputs.current[item.id] = "";
+            }
+          }
+
           // Handle workflow output messages
           if (item && item.type === "message" && item.content) {
             // Extract text from message content
@@ -896,16 +914,18 @@ export function WorkflowView({
           }
         }
 
-        // Handle text output
+        // Handle text output - assign to current item (not executor!)
         if (
           openAIEvent.type === "response.output_text.delta" &&
           "delta" in openAIEvent &&
           openAIEvent.delta
         ) {
-          const executorId = currentStreamingExecutor.current;
-          if (executorId) {
-            executorOutputs.current[executorId] =
-              (executorOutputs.current[executorId] || "") + openAIEvent.delta;
+          const itemId = currentStreamingItemId.current;
+          if (itemId) {
+            if (!itemOutputs.current[itemId]) {
+              itemOutputs.current[itemId] = "";
+            }
+            itemOutputs.current[itemId] += openAIEvent.delta;
           }
         }
 
@@ -1106,7 +1126,7 @@ export function WorkflowView({
             <div className="w-96 h-full">
               <ExecutionTimeline
                 events={workflowEvents}
-                executorOutputs={executorOutputs.current}
+                itemOutputs={itemOutputs.current}
                 currentExecutorId={activeExecutors[activeExecutors.length - 1] || null}
                 isStreaming={isStreaming}
                 onExecutorClick={handleNodeSelect}
