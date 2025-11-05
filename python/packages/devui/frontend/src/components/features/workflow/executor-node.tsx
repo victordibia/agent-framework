@@ -155,34 +155,32 @@ export const ExecutorNode = memo(({ data, selected }: NodeProps) => {
         isRunning ? config.glow : "shadow-sm",
       )}
     >
-      {/* Small circular handles */}
-      {!nodeData.isStartNode && (
-        <Handle
-          type="target"
-          position={targetPosition}
-          className="!w-2 !h-2 !rounded-full !border !border-gray-600 dark:!border-gray-500 transition-colors !min-w-0 !min-h-0"
-          style={{
-            backgroundColor: nodeData.state === "running" ? "#643FB2" :
-                           nodeData.state === "completed" ? "#10b981" :
-                           nodeData.state === "failed" ? "#ef4444" :
-                           nodeData.state === "cancelled" ? "#f97316" : "#4b5563"
-          }}
-        />
-      )}
+      {/* Small circular handles - always render both to support any edge configuration */}
+      <Handle
+        type="target"
+        position={targetPosition}
+        id="target"
+        className="!w-2 !h-2 !rounded-full !border !border-gray-600 dark:!border-gray-500 transition-colors !min-w-0 !min-h-0"
+        style={{
+          backgroundColor: nodeData.state === "running" ? "#643FB2" :
+                         nodeData.state === "completed" ? "#10b981" :
+                         nodeData.state === "failed" ? "#ef4444" :
+                         nodeData.state === "cancelled" ? "#f97316" : "#4b5563"
+        }}
+      />
 
-      {!nodeData.isEndNode && (
-        <Handle
-          type="source"
-          position={sourcePosition}
-          className="!w-2 !h-2 !rounded-full !border !border-gray-600 dark:!border-gray-500 transition-colors !min-w-0 !min-h-0"
-          style={{
-            backgroundColor: nodeData.state === "running" ? "#643FB2" :
-                           nodeData.state === "completed" ? "#10b981" :
-                           nodeData.state === "failed" ? "#ef4444" :
-                           nodeData.state === "cancelled" ? "#f97316" : "#4b5563"
-          }}
-        />
-      )}
+      <Handle
+        type="source"
+        position={sourcePosition}
+        id="source"
+        className="!w-2 !h-2 !rounded-full !border !border-gray-600 dark:!border-gray-500 transition-colors !min-w-0 !min-h-0"
+        style={{
+          backgroundColor: nodeData.state === "running" ? "#643FB2" :
+                         nodeData.state === "completed" ? "#10b981" :
+                         nodeData.state === "failed" ? "#ef4444" :
+                         nodeData.state === "cancelled" ? "#f97316" : "#4b5563"
+        }}
+      />
 
       <div className="p-3">
         {/* Header with icon and title */}

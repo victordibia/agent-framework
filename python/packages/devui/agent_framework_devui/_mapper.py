@@ -341,8 +341,96 @@ class MessageMapper:
         context["sequence_counter"] += 1
         return int(context["sequence_counter"])
 
+    def _serialize_value(self, value: Any) -> Any:
+        """Recursively serialize a value, handling complex nested objects.
+
+        Handles:
+        - Primitives (str, int, float, bool, None)
+        - Collections (list, tuple, set, dict)
+        - SerializationMixin objects (ChatMessage, etc.) - calls to_dict()
+        - Pydantic models - calls model_dump()
+        - Dataclasses - recursively serializes with asdict()
+        - Enums - extracts value
+        - datetime/date/UUID - converts to ISO string
+
+        Args:
+            value: Value to serialize
+
+        Returns:
+            JSON-serializable representation
+        """
+        from dataclasses import is_dataclass
+        from datetime import date, datetime
+        from enum import Enum
+        from uuid import UUID
+
+        # Handle None
+        if value is None:
+            return None
+
+        # Handle primitives
+        if isinstance(value, (str, int, float, bool)):
+            return value
+
+        # Handle datetime/date - convert to ISO format
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+
+        # Handle UUID - convert to string
+        if isinstance(value, UUID):
+            return str(value)
+
+        # Handle Enums - extract value
+        if isinstance(value, Enum):
+            return value.value
+
+        # Handle lists/tuples/sets - recursively serialize elements
+        if isinstance(value, (list, tuple)):
+            return [self._serialize_value(item) for item in value]
+        if isinstance(value, set):
+            return [self._serialize_value(item) for item in value]
+
+        # Handle dicts - recursively serialize values
+        if isinstance(value, dict):
+            return {k: self._serialize_value(v) for k, v in value.items()}
+
+        # Handle SerializationMixin (like ChatMessage) - call to_dict()
+        if hasattr(value, "to_dict") and callable(getattr(value, "to_dict", None)):
+            try:
+                return value.to_dict()  # type: ignore[attr-defined, no-any-return]
+            except Exception as e:
+                logger.debug(f"Failed to serialize with to_dict(): {e}")
+                return str(value)
+
+        # Handle Pydantic models - call model_dump()
+        if hasattr(value, "model_dump") and callable(getattr(value, "model_dump", None)):
+            try:
+                return value.model_dump()  # type: ignore[attr-defined, no-any-return]
+            except Exception as e:
+                logger.debug(f"Failed to serialize Pydantic model: {e}")
+                return str(value)
+
+        # Handle dataclasses - recursively serialize with asdict
+        if is_dataclass(value) and not isinstance(value, type):
+            try:
+                from dataclasses import asdict
+
+                # Use our custom serializer as dict_factory
+                return asdict(value, dict_factory=lambda items: {k: self._serialize_value(v) for k, v in items})
+            except Exception as e:
+                logger.debug(f"Failed to serialize nested dataclass: {e}")
+                return str(value)
+
+        # Fallback: convert to string (for unknown types)
+        logger.debug(f"Serializing unknown type {type(value).__name__} as string")
+        return str(value)
+
     def _serialize_request_data(self, request_data: Any) -> dict[str, Any]:
         """Serialize RequestInfoMessage to dict for JSON transmission.
+
+        Handles nested SerializationMixin objects (like ChatMessage) within dataclasses.
 
         Args:
             request_data: The RequestInfoMessage instance
@@ -350,23 +438,32 @@ class MessageMapper:
         Returns:
             Serialized dict representation
         """
-        from dataclasses import asdict, is_dataclass
+        from dataclasses import asdict, fields, is_dataclass
 
         if request_data is None:
             return {}
 
         # Handle dict first (most common)
         if isinstance(request_data, dict):
-            return request_data
+            return {k: self._serialize_value(v) for k, v in request_data.items()}
 
-        # Handle dataclasses - only instances, not types
-        # is_dataclass() returns True for both types and instances
-        # We check it's not a type to ensure it's an instance
+        # Handle dataclasses with nested SerializationMixin objects
+        # We can't use asdict() directly because it doesn't handle ChatMessage
         if is_dataclass(request_data) and not isinstance(request_data, type):
             try:
-                return asdict(request_data)  # type: ignore[arg-type]
+                # Manually serialize each field to handle nested SerializationMixin
+                result = {}
+                for field in fields(request_data):
+                    field_value = getattr(request_data, field.name)
+                    result[field.name] = self._serialize_value(field_value)
+                return result
             except Exception as e:
-                logger.debug(f"Failed to serialize dataclass with asdict(): {e}")
+                logger.debug(f"Failed to serialize dataclass fields: {e}")
+                # Fallback to asdict() if our custom serialization fails
+                try:
+                    return asdict(request_data)  # type: ignore[arg-type]
+                except Exception as e2:
+                    logger.debug(f"Failed to serialize dataclass with asdict(): {e2}")
 
         # Handle Pydantic models (have model_dump method)
         if hasattr(request_data, "model_dump") and callable(getattr(request_data, "model_dump", None)):
@@ -892,8 +989,15 @@ class MessageMapper:
                 request_type_class = getattr(event, "request_type", None)
                 request_data = getattr(event, "data", None)
 
+                logger.info("📨 [MAPPER] Processing RequestInfoEvent")
+                logger.info(f"   request_id: {request_id}")
+                logger.info(f"   source_executor_id: {source_executor_id}")
+                logger.info(f"   request_type_class: {request_type_class}")
+                logger.info(f"   request_data: {request_data}")
+
                 # Serialize request data
                 serialized_data = self._serialize_request_data(request_data)
+                logger.info(f"   serialized_data: {serialized_data}")
 
                 # Get request type name for debugging
                 request_type_name = "Unknown"
@@ -905,8 +1009,10 @@ class MessageMapper:
                 response_schema = getattr(event, "_response_schema", None)
                 if not response_schema:
                     # Fallback to string if somehow not set (shouldn't happen with current executor enrichment)
-                    logger.debug(f"Response schema not found for {request_type_name}, using default")
+                    logger.warning(f"⚠️  Response schema not found for {request_type_name}, using default")
                     response_schema = {"type": "string"}
+                else:
+                    logger.info(f"   response_schema: {response_schema}")
 
                 # Wrap primitive schemas in object for form rendering
                 # The UI's SchemaFormRenderer expects an object with properties
@@ -917,6 +1023,7 @@ class MessageMapper:
                         "properties": {"response": response_schema},
                         "required": ["response"],
                     }
+                    logger.info("   wrapped primitive schema in object")
                 else:
                     wrapped_schema = response_schema
 
@@ -934,6 +1041,11 @@ class MessageMapper:
                     sequence_number=self._next_sequence(context),
                     timestamp=datetime.now().isoformat(),
                 )
+
+                logger.info("✅ [MAPPER] Created ResponseRequestInfoEvent:")
+                logger.info(f"   type: {hil_event.type}")
+                logger.info(f"   request_id: {hil_event.request_id}")
+                logger.info(f"   sequence_number: {hil_event.sequence_number}")
 
                 return [hil_event]
 

@@ -546,8 +546,9 @@ function getEventColor(type: string) {
 
 function EventItem({ event }: EventItemProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const Icon = getEventIcon(event.type);
-  const colorClass = getEventColor(event.type);
+  const eventType = event.type || "unknown";
+  const Icon = getEventIcon(eventType);
+  const colorClass = getEventColor(eventType);
 
   // Use stored UI timestamp if available, otherwise compute from event data
   const timestamp = ('_uiTimestamp' in event && typeof event._uiTimestamp === 'number')
@@ -589,7 +590,7 @@ function EventItem({ event }: EventItemProps) {
         <Icon className={`h-3 w-3 ${colorClass}`} />
         <span className="font-mono">{timestamp}</span>
         <Badge variant="outline" className="text-xs py-0">
-          {event.type.replace("response.", "")}
+          {event.type ? event.type.replace("response.", "") : "unknown"}
         </Badge>
       </div>
 

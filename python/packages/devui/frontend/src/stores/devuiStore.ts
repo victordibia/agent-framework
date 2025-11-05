@@ -273,19 +273,30 @@ export const useDevUIStore = create<DevUIStore>()(
         setShowDebugPanel: (show) => set({ showDebugPanel: show }),
         setDebugPanelWidth: (width) => set({ debugPanelWidth: width }),
         addDebugEvent: (event) =>
-          set((state) => ({
-            debugEvents: [
-              ...state.debugEvents,
-              {
-                ...event,
-                // Add UI display timestamp when event is received (Unix seconds)
-                // This ensures timestamp stays fixed across re-renders
-                _uiTimestamp: ('created_at' in event && event.created_at)
-                  ? event.created_at
-                  : Math.floor(Date.now() / 1000),
-              } as ExtendedResponseStreamEvent & { _uiTimestamp: number },
-            ],
-          })),
+          set((state) => {
+            // Generate unique timestamp for each event
+            // Use current time + small increment to ensure uniqueness even for rapid events
+            const baseTimestamp = Math.floor(Date.now() / 1000);
+            const lastTimestamp = state.debugEvents.length > 0
+              ? (state.debugEvents[state.debugEvents.length - 1] as any)._uiTimestamp || 0
+              : 0;
+            // Ensure new timestamp is always greater than the last one
+            const uniqueTimestamp = Math.max(baseTimestamp, lastTimestamp + 1);
+
+            return {
+              debugEvents: [
+                ...state.debugEvents,
+                {
+                  ...event,
+                  // Add UI display timestamp when event is received (Unix seconds)
+                  // Each event gets a unique timestamp to preserve chronological order
+                  _uiTimestamp: ('created_at' in event && event.created_at)
+                    ? event.created_at
+                    : uniqueTimestamp,
+                } as ExtendedResponseStreamEvent & { _uiTimestamp: number },
+              ],
+            };
+          }),
         clearDebugEvents: () => set({ debugEvents: [] }),
         setIsResizing: (resizing) => set({ isResizing: resizing }),
 

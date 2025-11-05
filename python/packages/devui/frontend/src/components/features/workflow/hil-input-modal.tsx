@@ -74,7 +74,7 @@ export function HilInputModal({
               <CardContent>
                 {/* Show request data as readonly context */}
                 {Object.keys(req.request_data).length > 0 && (
-                  <div className="mb-4 p-3 bg-muted rounded-md">
+                  <div className="mb-4 p-3 bg-muted rounded-md max-h-48 overflow-y-auto">
                     <p className="text-xs font-medium text-muted-foreground mb-2">
                       Request Context:
                     </p>
@@ -84,7 +84,7 @@ export function HilInputModal({
                         .map(([key, value]) => (
                           <div key={key} className="text-xs">
                             <span className="font-medium">{key}:</span>{" "}
-                            <span className="text-muted-foreground">
+                            <span className="text-muted-foreground break-all">
                               {typeof value === "object" ? JSON.stringify(value) : String(value)}
                             </span>
                           </div>

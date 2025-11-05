@@ -225,6 +225,15 @@ class AgentFrameworkExecutor:
                         yield event
                 elif entity_info.type == "workflow":
                     async for event in self._execute_workflow(entity_obj, request, trace_collector):
+                        # Log RequestInfoEvent for debugging HIL flow
+                        event_class = event.__class__.__name__ if hasattr(event, "__class__") else type(event).__name__
+                        if event_class == "RequestInfoEvent":
+                            logger.info("🔔 [EXECUTOR] RequestInfoEvent detected from workflow!")
+                            logger.info(f"   request_id: {getattr(event, 'request_id', 'N/A')}")
+                            logger.info(f"   source_executor_id: {getattr(event, 'source_executor_id', 'N/A')}")
+                            logger.info(f"   request_type: {getattr(event, 'request_type', 'N/A')}")
+                            data = getattr(event, "data", None)
+                            logger.info(f"   data type: {type(data).__name__ if data else 'None'}")
                         yield event
                 else:
                     raise ValueError(f"Unsupported entity type: {entity_info.type}")
@@ -321,6 +330,37 @@ class AgentFrameworkExecutor:
             # Still yield the error for backward compatibility
             yield {"type": "error", "message": f"Agent execution error: {e!s}"}
 
+    def _sync_workflow_id(self, workflow: Any) -> None:
+        """Sync workflow runner's workflow_id with workflow.id before execution.
+
+        CRITICAL FIX: Workflows may set workflow.id AFTER build() (e.g., workflow.id = "my-workflow"),
+        but the runner was created with the original UUID from __init__.
+        This sync ensures checkpoints are saved with the correct workflow_id that matches
+        what we use for queries, preventing checkpoint lookup failures.
+
+        This is essential for:
+        - Directory-based workflows where entity_id differs from workflow.id
+        - In-memory workflows where workflow.id is set after build()
+        - Cached workflow objects reused across requests
+
+        Args:
+            workflow: Workflow object to sync
+        """
+        if not hasattr(workflow, "_runner") or not hasattr(workflow._runner, "context"):
+            logger.debug("Workflow missing _runner or context, skipping workflow_id sync")
+            return
+
+        if not hasattr(workflow._runner.context, "set_workflow_id"):
+            logger.debug("Runner context missing set_workflow_id method, skipping sync")
+            return
+
+        if not workflow.id:
+            logger.warning("Workflow has None/empty id, cannot sync workflow_id")
+            return
+
+        workflow._runner.context.set_workflow_id(workflow.id)
+        logger.debug(f"Synced runner workflow_id to: {workflow.id}")
+
     async def _execute_workflow(
         self, workflow: Any, request: AgentFrameworkRequest, trace_collector: Any
     ) -> AsyncGenerator[Any, None]:
@@ -391,6 +431,9 @@ class AgentFrameworkExecutor:
                 # (checkpoint_id is guaranteed to exist due to earlier validation)
                 logger.debug(f"Restoring checkpoint {checkpoint_id} then sending HIL responses")
 
+                # Sync workflow ID before HIL response handling
+                self._sync_workflow_id(workflow)
+
                 try:
                     # Step 1: Restore checkpoint to populate workflow's in-memory pending requests
                     restored = False
@@ -450,6 +493,9 @@ class AgentFrameworkExecutor:
                 # Resume from checkpoint (explicit or auto-latest) using unified API
                 logger.info(f"Resuming workflow from checkpoint: {checkpoint_id}")
 
+                # Sync workflow ID before resuming
+                self._sync_workflow_id(workflow)
+
                 try:
                     async for event in workflow.run_stream(
                         checkpoint_id=checkpoint_id, checkpoint_storage=checkpoint_storage
@@ -462,8 +508,9 @@ class AgentFrameworkExecutor:
 
                         yield event
 
-                        if isinstance(event, RequestInfoEvent):
-                            break
+                        # Note: Removed break on RequestInfoEvent - continue yielding all events
+                        # The workflow is already paused by ctx.request_info() in the framework
+                        # DevUI should continue yielding events even during HIL pause
 
                 except ValueError as e:
                     error_msg = f"Cannot resume from checkpoint: {e}"
@@ -473,6 +520,10 @@ class AgentFrameworkExecutor:
             else:
                 # First run - pass DevUI's checkpoint storage to enable checkpointing
                 logger.info("Starting workflow fresh with DevUI checkpoint storage")
+
+                # Sync workflow runner's workflow_id before execution
+                self._sync_workflow_id(workflow)
+
                 parsed_input = await self._parse_workflow_input(workflow, request.input)
 
                 async for event in workflow.run_stream(parsed_input, checkpoint_storage=checkpoint_storage):
@@ -484,8 +535,9 @@ class AgentFrameworkExecutor:
 
                     yield event
 
-                    if isinstance(event, RequestInfoEvent):
-                        break
+                    # Note: Removed break on RequestInfoEvent - continue yielding all events
+                    # The workflow is already paused by ctx.request_info() in the framework
+                    # DevUI should continue yielding events even during HIL pause
 
         except Exception as e:
             logger.error(f"Error in workflow execution: {e}")

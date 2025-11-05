@@ -301,7 +301,10 @@ class DevServer:
 
                 # Trigger lazy loading if entity not yet loaded
                 # This will import the module and enrich metadata
-                entity_obj = await executor.entity_discovery.load_entity(entity_id)
+                # Pass checkpoint_manager to ensure workflows get checkpoint storage injected
+                entity_obj = await executor.entity_discovery.load_entity(
+                    entity_id, checkpoint_manager=executor.checkpoint_manager
+                )
 
                 # Get updated entity info (may have been enriched during load)
                 entity_info = executor.get_entity_info(entity_id) or entity_info

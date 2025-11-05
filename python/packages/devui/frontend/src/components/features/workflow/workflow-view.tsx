@@ -5,25 +5,21 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  CheckCircle,
-  AlertCircle,
-  Loader2,
   Play,
   Settings,
   RotateCcw,
   Info,
   Workflow as WorkflowIcon,
-  Maximize2,
-  ChevronsDown,
   RefreshCw,
+  Loader2,
 } from "lucide-react";
 import { LoadingState } from "@/components/ui/loading-state";
 import { WorkflowInputForm } from "./workflow-input-form";
 import { HilInputModal } from "./hil-input-modal";
 import { Button } from "@/components/ui/button";
 import { WorkflowFlow } from "./workflow-flow";
-import { useWorkflowEventCorrelation } from "@/hooks/useWorkflowEventCorrelation";
 import { WorkflowDetailsModal } from "./workflow-details-modal";
+import { ExecutionTimeline } from "./execution-timeline";
 import { apiClient } from "@/services/api";
 import type {
   WorkflowInfo,
@@ -31,7 +27,6 @@ import type {
   JSONSchemaProperty,
 } from "@/types";
 import type { ResponseRequestInfoEvent } from "@/types/openai";
-import type { ExecutorNodeData } from "./executor-node";
 import {
   Dialog,
   DialogContent,
@@ -61,7 +56,6 @@ interface RunWorkflowButtonProps {
     timestamp: string;
     status: string;
   }>;
-  workflowError?: string;
 }
 
 function RunWorkflowButton({
@@ -277,14 +271,11 @@ export function WorkflowView({
     ExtendedResponseStreamEvent[]
   >([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [selectedExecutor, setSelectedExecutor] =
-    useState<ExecutorNodeData | null>(null);
-  const [workflowResult, setWorkflowResult] = useState<string>("");
-  const [workflowError, setWorkflowError] = useState<string>("");
+  const [selectedExecutorId, setSelectedExecutorId] = useState<string | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
-  const [resultModalOpen, setResultModalOpen] = useState(false);
-  const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [workflowResult, setWorkflowResult] = useState<string>("");
 
   // HIL (Human-in-the-Loop) state
   const [pendingHilRequests, setPendingHilRequests] = useState<
@@ -298,9 +289,6 @@ export function WorkflowView({
     Record<string, Record<string, unknown>>
   >({});
   const [showHilModal, setShowHilModal] = useState(false);
-  const resultContentRef = useRef<HTMLDivElement>(null);
-  const errorContentRef = useRef<HTMLDivElement>(null);
-  const [isErrorScrollable, setIsErrorScrollable] = useState(false);
 
   // Track per-executor outputs and workflow metadata
   const executorOutputs = useRef<Record<string, string>>({});
@@ -322,13 +310,6 @@ export function WorkflowView({
   >([]);
   const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
 
-  // Panel resize state
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
-    const savedHeight = localStorage.getItem("workflowBottomPanelHeight");
-    return savedHeight ? parseInt(savedHeight, 10) : 300;
-  });
-  const [isResizing, setIsResizing] = useState(false);
-
   // View options state
   const [viewOptions, setViewOptions] = useState(() => {
     const saved = localStorage.getItem("workflowViewOptions");
@@ -347,11 +328,6 @@ export function WorkflowView({
     return (saved as "LR" | "TB") || "LR";
   });
 
-  const { selectExecutor, getExecutorData } = useWorkflowEventCorrelation(
-    openAIEvents,
-    isStreaming
-  );
-
   // Save view options to localStorage
   useEffect(() => {
     localStorage.setItem("workflowViewOptions", JSON.stringify(viewOptions));
@@ -361,40 +337,6 @@ export function WorkflowView({
   useEffect(() => {
     localStorage.setItem("workflowLayoutDirection", layoutDirection);
   }, [layoutDirection]);
-
-  // Auto-scroll output panel when new content arrives (if user is at bottom)
-  useEffect(() => {
-    const handleAutoScroll = () => {
-      if (resultContentRef.current) {
-        const container = resultContentRef.current;
-        const isScrollable = container.scrollHeight > container.clientHeight;
-
-        // Check if user is near the bottom (within 100px threshold)
-        const scrollBottom =
-          container.scrollHeight - container.scrollTop - container.clientHeight;
-        const isNearBottom = scrollBottom < 100;
-
-        // Auto-scroll smoothly if user is near bottom and content is streaming
-        if (isStreaming && isNearBottom && isScrollable) {
-          container.scrollTo({
-            top: container.scrollHeight,
-            behavior: "smooth",
-          });
-        }
-      }
-      if (errorContentRef.current) {
-        const isScrollable =
-          errorContentRef.current.scrollHeight >
-          errorContentRef.current.clientHeight;
-        setIsErrorScrollable(isScrollable);
-      }
-    };
-
-    handleAutoScroll();
-    // Recheck on window resize
-    window.addEventListener("resize", handleAutoScroll);
-    return () => window.removeEventListener("resize", handleAutoScroll);
-  }, [workflowResult, workflowError, bottomPanelHeight, isStreaming]);
 
   // View option handlers
   const toggleViewOption = (key: keyof typeof viewOptions) => {
@@ -500,9 +442,9 @@ export function WorkflowView({
     // Clear state when workflow changes
     setOpenAIEvents([]);
     setIsStreaming(false);
-    setSelectedExecutor(null);
+    setSelectedExecutorId(null);
+    setShowTimeline(false);
     setWorkflowResult("");
-    setWorkflowError("");
     executorOutputs.current = {};
     currentStreamingExecutor.current = null;
     workflowMetadata.current = null;
@@ -522,17 +464,8 @@ export function WorkflowView({
     loadWorkflowInfo();
   }, [selectedWorkflow.id, selectedWorkflow.type]);
 
-  const handleNodeSelect = (executorId: string, data: ExecutorNodeData) => {
-    setSelectedExecutor(data);
-    selectExecutor(executorId);
-
-    // Update result display to show selected executor's output
-    if (executorOutputs.current[executorId]) {
-      // Show per-executor output if available
-      setWorkflowResult(executorOutputs.current[executorId]);
-    }
-    // Note: For executors without output, we don't clear workflowResult
-    // This preserves the workflow's final output for display
+  const handleNodeSelect = (executorId: string) => {
+    setSelectedExecutorId(executorId);
   };
 
   // Extract workflow and output item events from OpenAI events for executor tracking
@@ -546,10 +479,17 @@ export function WorkflowView({
         event.type === "response.completed" ||
         event.type === "response.failed" ||
         event.type === "response.workflow_event.completed" ||
-        // Keep legacy support for older backends
+        // Fallback: some backends may emit .complete instead of .completed
         event.type === "response.workflow_event.complete"
     );
   }, [openAIEvents]);
+
+  // Show timeline when first workflow event arrives
+  useEffect(() => {
+    if (workflowEvents.length > 0 && !showTimeline) {
+      setShowTimeline(true);
+    }
+  }, [workflowEvents.length, showTimeline]);
 
   // Extract executor history from workflow events (filter out workflow-level events)
   const executorHistory = useMemo(() => {
@@ -588,7 +528,7 @@ export function WorkflowView({
           });
         }
       }
-      // Legacy support for older backends
+      // Fallback: handle .complete variant for backwards compatibility
       else if (
         event.type === "response.workflow_event.complete" &&
         "data" in event &&
@@ -623,44 +563,6 @@ export function WorkflowView({
     return recent.map((h) => h.executorId);
   }, [executorHistory, isStreaming]);
 
-  // Save panel height to localStorage
-  useEffect(() => {
-    localStorage.setItem(
-      "workflowBottomPanelHeight",
-      bottomPanelHeight.toString()
-    );
-  }, [bottomPanelHeight]);
-
-  // Handle resize drag
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      setIsResizing(true);
-
-      const startY = e.clientY;
-      const startHeight = bottomPanelHeight;
-
-      const handleMouseMove = (e: MouseEvent) => {
-        const deltaY = startY - e.clientY;
-        const newHeight = Math.max(
-          200,
-          Math.min(window.innerHeight * 0.6, startHeight + deltaY)
-        );
-        setBottomPanelHeight(newHeight);
-      };
-
-      const handleMouseUp = () => {
-        setIsResizing(false);
-        document.removeEventListener("mousemove", handleMouseMove);
-        document.removeEventListener("mouseup", handleMouseUp);
-      };
-
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-    },
-    [bottomPanelHeight]
-  );
-
   // Handle workflow data sending (structured input)
   const handleSendWorkflowData = useCallback(
     async (inputData: Record<string, unknown>) => {
@@ -668,10 +570,9 @@ export function WorkflowView({
 
       setIsStreaming(true);
       setOpenAIEvents([]); // Clear previous OpenAI events for new execution
-      setWorkflowResult("");
-      setWorkflowError("");
 
       // Clear per-executor outputs and metadata for new run
+      setWorkflowResult("");
       executorOutputs.current = {};
       currentStreamingExecutor.current = null;
       workflowMetadata.current = null;
@@ -702,9 +603,24 @@ export function WorkflowView({
             openAIEvent.type === "response.completed" ||
             openAIEvent.type === "response.failed" ||
             openAIEvent.type === "response.workflow_event.completed" ||
-            openAIEvent.type === "response.workflow_event.complete" // Legacy
+            openAIEvent.type === "response.workflow_event.complete" // Fallback variant
           ) {
-            setOpenAIEvents((prev) => [...prev, openAIEvent]);
+            setOpenAIEvents((prev) => {
+              // Generate unique timestamp for each event
+              const baseTimestamp = Math.floor(Date.now() / 1000);
+              const lastTimestamp = prev.length > 0
+                ? (prev[prev.length - 1] as any)._uiTimestamp || 0
+                : 0;
+              const uniqueTimestamp = Math.max(baseTimestamp, lastTimestamp + 1);
+
+              return [
+                ...prev,
+                {
+                  ...openAIEvent,
+                  _uiTimestamp: uniqueTimestamp,
+                } as ExtendedResponseStreamEvent & { _uiTimestamp: number },
+              ];
+            });
           }
 
           // Pass to debug panel
@@ -759,27 +675,10 @@ export function WorkflowView({
 
           // Handle workflow failure
           if (openAIEvent.type === "response.failed") {
-            const failedEvent = openAIEvent as import("@/types/openai").ResponseFailedEvent;
-            const error = failedEvent.response?.error;
-
-            // Format error message with details
-            let errorMessage = "Workflow execution failed";
-            if (error) {
-              if (typeof error === "object" && "message" in error) {
-                errorMessage = error.message as string;
-                if ("code" in error && error.code) {
-                  errorMessage += ` (Code: ${error.code})`;
-                }
-              } else if (typeof error === "string") {
-                errorMessage = error;
-              } else {
-                errorMessage = JSON.stringify(error);
-              }
-            }
-            setWorkflowError(errorMessage);
+            // Error will be displayed in timeline
           }
 
-          // Legacy support for older backends
+          // Fallback support for workflow_event format (used for unhandled event types)
           if (
             openAIEvent.type === "response.workflow_event.completed" &&
             "data" in openAIEvent &&
@@ -809,15 +708,9 @@ export function WorkflowView({
                 data.event_type === "WorkflowOutputEvent") &&
               data.data
             ) {
-              // For workflows that don't emit text deltas (e.g., ctx.yield_output),
-              // the WorkflowOutputEvent contains the final output
-              if (typeof data.data === "string") {
-                setWorkflowResult(data.data);
-              } else {
-                // Store object data and display as formatted JSON
+              // Store object data for metadata
+              if (typeof data.data === "object") {
                 workflowMetadata.current = data.data as Record<string, unknown>;
-                const jsonOutput = JSON.stringify(data.data, null, 2);
-                setWorkflowResult(jsonOutput);
               }
               currentStreamingExecutor.current = null;
             }
@@ -840,21 +733,6 @@ export function WorkflowView({
 
               // Append to specific executor's output
               executorOutputs.current[executorId] += openAIEvent.delta;
-
-              // Update display based on what should be shown
-              if (
-                selectedExecutor &&
-                executorOutputs.current[selectedExecutor.executorId] &&
-                selectedExecutor.executorId !== executorId
-              ) {
-                // If user has selected a different executor, show that executor's output
-                setWorkflowResult(
-                  executorOutputs.current[selectedExecutor.executorId]
-                );
-              } else {
-                // Otherwise show current executor's output (default behavior)
-                setWorkflowResult(executorOutputs.current[executorId]);
-              }
             }
           }
 
@@ -903,8 +781,7 @@ export function WorkflowView({
 
           // Handle errors (ResponseErrorEvent - fallback error format)
           if (openAIEvent.type === "error") {
-            const errorEvent = openAIEvent as import("@/types/openai").ResponseErrorEvent;
-            setWorkflowError(errorEvent.message || "Unknown error");
+            // Error will be displayed in timeline
             break;
           }
         }
@@ -916,9 +793,8 @@ export function WorkflowView({
 
         setIsStreaming(false);
       } catch (error) {
-        setWorkflowError(
-          error instanceof Error ? error.message : "Unknown error"
-        );
+        // Error will be displayed in timeline
+        console.error("Workflow execution error:", error);
         setIsStreaming(false);
       }
     },
@@ -967,7 +843,22 @@ export function WorkflowView({
           openAIEvent.type === "response.failed" ||
           openAIEvent.type === "response.workflow_event.completed"
         ) {
-          setOpenAIEvents((prev) => [...prev, openAIEvent]);
+          setOpenAIEvents((prev) => {
+            // Generate unique timestamp for each event
+            const baseTimestamp = Math.floor(Date.now() / 1000);
+            const lastTimestamp = prev.length > 0
+              ? (prev[prev.length - 1] as any)._uiTimestamp || 0
+              : 0;
+            const uniqueTimestamp = Math.max(baseTimestamp, lastTimestamp + 1);
+
+            return [
+              ...prev,
+              {
+                ...openAIEvent,
+                _uiTimestamp: uniqueTimestamp,
+              } as ExtendedResponseStreamEvent & { _uiTimestamp: number },
+            ];
+          });
         }
 
         // Pass to debug panel
@@ -1015,7 +906,6 @@ export function WorkflowView({
           if (executorId) {
             executorOutputs.current[executorId] =
               (executorOutputs.current[executorId] || "") + openAIEvent.delta;
-            setWorkflowResult(executorOutputs.current[executorId]);
           }
         }
 
@@ -1026,17 +916,7 @@ export function WorkflowView({
 
         // Handle errors
         if (openAIEvent.type === "response.failed") {
-          const failedEvent = openAIEvent as import("@/types/openai").ResponseFailedEvent;
-          const error = failedEvent.response?.error;
-          let errorMessage = "Workflow execution failed";
-          if (error) {
-            if (typeof error === "object" && "message" in error) {
-              errorMessage = error.message as string;
-            } else if (typeof error === "string") {
-              errorMessage = error;
-            }
-          }
-          setWorkflowError(errorMessage);
+          // Error will be displayed in timeline
         }
       }
 
@@ -1045,9 +925,8 @@ export function WorkflowView({
       setHilResponses({});
       setIsStreaming(false);
     } catch (error) {
-      setWorkflowError(
-        error instanceof Error ? error.message : "HIL submission failed"
-      );
+      // Error will be displayed in timeline
+      console.error("HIL submission error:", error);
       setIsStreaming(false);
     }
   }, [selectedWorkflow, hilResponses, onDebugEvent]);
@@ -1180,14 +1059,11 @@ export function WorkflowView({
                 workflowState={
                   isStreaming
                     ? "running"
-                    : workflowError
-                    ? "error"
                     : executorHistory.length > 0
                     ? "completed"
                     : "ready"
                 }
                 executorHistory={executorHistory}
-                workflowError={workflowError}
               />
             </div>
           )}
@@ -1200,395 +1076,46 @@ export function WorkflowView({
         )}
       </div>
 
-      {/* Workflow Visualization */}
-      <div className="flex-1 min-h-0">
-        {workflowInfo?.workflow_dump && (
-          <WorkflowFlow
-            workflowDump={workflowInfo.workflow_dump}
-            events={workflowEvents}
-            isStreaming={isStreaming}
-            onNodeSelect={handleNodeSelect}
-            className="h-full"
-            viewOptions={viewOptions}
-            onToggleViewOption={toggleViewOption}
-            layoutDirection={layoutDirection}
-            onLayoutDirectionChange={setLayoutDirection}
-          />
-        )}
-      </div>
-
-      {/* Resize Handle */}
-      <div
-        className={`h-1 cursor-row-resize flex-shrink-0 relative group transition-colors duration-200 ease-in-out ${
-          isResizing ? "bg-primary/40" : "bg-border hover:bg-primary/20"
-        }`}
-        onMouseDown={handleMouseDown}
-      >
-        <div className="absolute inset-x-0 -top-2 -bottom-2 flex items-center justify-center">
-          <div
-            className={`w-12 h-1 rounded-full transition-all duration-200 ease-in-out ${
-              isResizing
-                ? "bg-primary shadow-lg shadow-primary/25"
-                : "bg-primary/30 group-hover:bg-primary group-hover:shadow-md group-hover:shadow-primary/20"
-            }`}
-          ></div>
-        </div>
-      </div>
-
-      {/* Bottom Panel - Execution Details */}
-      <div
-        className="flex-shrink-0 border-t overflow-hidden"
-        style={{ height: `${bottomPanelHeight}px` }}
-      >
-        {/* Full Width - Execution Details */}
-        <div className="h-full flex gap-4 p-4">
-          {selectedExecutor ||
-          activeExecutors.length > 0 ||
-          executorHistory.length > 0 ||
-          workflowResult.length > 0 ||
-          workflowError ? (
-            <>
-              {/* Current/Last Executor Panel */}
-              {(selectedExecutor ||
-                activeExecutors.length > 0 ||
-                executorHistory.length > 0) && (
-                <div
-                  className={`border border-border rounded bg-card shadow-sm flex flex-col ${
-                    workflowResult || workflowError ? "flex-1" : "w-full"
-                  }`}
-                >
-                  <div className="border-b border-border px-4 py-3 bg-muted rounded-t flex-shrink-0">
-                    <h4 className="text-sm font-medium text-foreground">
-                      {selectedExecutor
-                        ? `Executor: ${
-                            selectedExecutor.name || selectedExecutor.executorId
-                          }`
-                        : isStreaming && activeExecutors.length > 0
-                        ? "Current Executor"
-                        : "Last Executor"}
-                    </h4>
-                  </div>
-                  <div className="p-4 overflow-auto flex-1">
-                    {selectedExecutor ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className={`w-3 h-3 rounded-full ${
-                              selectedExecutor.state === "running"
-                                ? "bg-[#643FB2] dark:bg-[#8B5CF6] animate-pulse"
-                                : selectedExecutor.state === "completed"
-                                ? "bg-green-500 dark:bg-green-400"
-                                : selectedExecutor.state === "failed"
-                                ? "bg-red-500 dark:bg-red-400"
-                                : selectedExecutor.state === "cancelled"
-                                ? "bg-orange-500 dark:bg-orange-400"
-                                : "bg-gray-400 dark:bg-gray-500"
-                            }`}
-                          />
-                          <span className="text-sm font-medium capitalize text-foreground">
-                            {selectedExecutor.state}
-                          </span>
-                          {selectedExecutor.executorType && (
-                            <span className="text-xs text-muted-foreground">
-                              ({selectedExecutor.executorType})
-                            </span>
-                          )}
-                        </div>
-
-                        {selectedExecutor.inputData !== undefined &&
-                          selectedExecutor.inputData !== null && (
-                            <div>
-                              <h5 className="text-xs font-medium text-foreground mb-1">
-                                Input Data:
-                              </h5>
-                              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto max-h-24">
-                                {String(
-                                  typeof selectedExecutor.inputData === "string"
-                                    ? selectedExecutor.inputData
-                                    : (() => {
-                                        try {
-                                          return JSON.stringify(
-                                            selectedExecutor.inputData,
-                                            null,
-                                            2
-                                          );
-                                        } catch {
-                                          return "[Unable to display data]";
-                                        }
-                                      })()
-                                )}
-                              </pre>
-                            </div>
-                          )}
-
-                        {selectedExecutor.outputData !== undefined &&
-                          selectedExecutor.outputData !== null && (
-                            <div>
-                              <h5 className="text-xs font-medium text-foreground mb-1">
-                                Output Data:
-                              </h5>
-                              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto max-h-24">
-                                {String(
-                                  typeof selectedExecutor.outputData ===
-                                    "string"
-                                    ? selectedExecutor.outputData
-                                    : (() => {
-                                        try {
-                                          return JSON.stringify(
-                                            selectedExecutor.outputData,
-                                            null,
-                                            2
-                                          );
-                                        } catch {
-                                          return "[Unable to display data]";
-                                        }
-                                      })()
-                                )}
-                              </pre>
-                            </div>
-                          )}
-
-                        {selectedExecutor.error && (
-                          <div>
-                            <h5 className="text-xs font-medium text-destructive mb-1">
-                              Error:
-                            </h5>
-                            <pre className="text-xs bg-destructive/10 text-destructive p-2 rounded overflow-x-auto">
-                              {selectedExecutor.error}
-                            </pre>
-                          </div>
-                        )}
-
-                        <button
-                          onClick={() => setSelectedExecutor(null)}
-                          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          ← Back to current executor
-                        </button>
-                      </div>
-                    ) : (
-                      (() => {
-                        const currentExecutorId =
-                          isStreaming && activeExecutors.length > 0
-                            ? activeExecutors[activeExecutors.length - 1]
-                            : executorHistory.length > 0
-                            ? executorHistory[executorHistory.length - 1]
-                                .executorId
-                            : null;
-
-                        if (!currentExecutorId) return null;
-
-                        const executorData = getExecutorData(currentExecutorId);
-                        const historyItem = executorHistory.find(
-                          (h) => h.executorId === currentExecutorId
-                        );
-
-                        return (
-                          <div
-                            className="space-y-3 cursor-pointer hover:bg-muted/30 p-2 rounded transition-colors"
-                            onClick={() => {
-                              if (executorData) {
-                                setSelectedExecutor({
-                                  executorId: executorData.executorId,
-                                  state: executorData.state,
-                                  inputData: executorData.inputData,
-                                  outputData: executorData.outputData,
-                                  error: executorData.error,
-                                  name: undefined,
-                                  executorType: undefined,
-                                  isSelected: true,
-                                  isStartNode: false,
-                                  onNodeClick: undefined,
-                                });
-                              }
-                            }}
-                          >
-                            <div className="flex items-center gap-2">
-                              <div
-                                className={`w-3 h-3 rounded-full ${
-                                  isStreaming
-                                    ? "bg-[#643FB2] dark:bg-[#8B5CF6] animate-pulse"
-                                    : historyItem?.status === "completed"
-                                    ? "bg-green-500 dark:bg-green-400"
-                                    : historyItem?.status === "error"
-                                    ? "bg-red-500 dark:bg-red-400"
-                                    : "bg-gray-400 dark:bg-gray-500"
-                                }`}
-                              />
-                              <span className="text-sm font-medium text-foreground">
-                                {currentExecutorId}
-                              </span>
-                              {historyItem && (
-                                <span className="text-xs text-muted-foreground">
-                                  {new Date(
-                                    historyItem.timestamp
-                                  ).toLocaleTimeString()}
-                                </span>
-                              )}
-                            </div>
-
-                            {historyItem && (
-                              <p className="text-sm text-muted-foreground">
-                                {isStreaming
-                                  ? "Processing..."
-                                  : historyItem.message}
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })()
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Output Panel - displays workflow execution results and streaming output */}
-              {workflowResult.length > 0 &&
-                (() => {
-                  // Determine the panel state and styling
-                  const isStreamingState =
-                    isStreaming && currentStreamingExecutor.current;
-                  const isSelectedExecutor = !isStreaming && selectedExecutor;
-
-                  // Define theme based on state - use colors sparingly (borders/icons only, not text)
-                  const theme = isStreamingState
-                    ? {
-                        // Purple theme when streaming (matches running node color #643FB2)
-                        border: "border-[#643FB2]/40 dark:border-[#8B5CF6]/40",
-                        bg: "bg-[#643FB2]/5 dark:bg-[#8B5CF6]/5",
-                        headerBg: "bg-[#643FB2]/10 dark:bg-[#8B5CF6]/10",
-                        icon: (
-                          <Loader2 className="w-4 h-4 text-[#643FB2] dark:text-[#8B5CF6] animate-spin" />
-                        ),
-                        buttonBg: "bg-background dark:bg-background",
-                        buttonBorder:
-                          "border-[#643FB2]/30 dark:border-[#8B5CF6]/30",
-                        buttonHover:
-                          "hover:bg-[#643FB2]/10 dark:hover:bg-[#8B5CF6]/10",
-                      }
-                    : isSelectedExecutor
-                    ? {
-                        // Blue theme when executor selected (matches selected node ring blue-500)
-                        border: "border-blue-500/40 dark:border-blue-500/40",
-                        bg: "bg-blue-500/5 dark:bg-blue-500/5",
-                        headerBg: "bg-blue-500/10 dark:bg-blue-500/10",
-                        icon: (
-                          <Info className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-                        ),
-                        buttonBg: "bg-background dark:bg-background",
-                        buttonBorder:
-                          "border-blue-500/30 dark:border-blue-500/30",
-                        buttonHover:
-                          "hover:bg-blue-500/10 dark:hover:bg-blue-500/10",
-                      }
-                    : {
-                        // Green theme when workflow complete (matches completed node green-500)
-                        border: "border-green-500/40 dark:border-green-400/40",
-                        bg: "bg-green-500/5 dark:bg-green-400/5",
-                        headerBg: "bg-green-500/10 dark:bg-green-400/10",
-                        icon: (
-                          <CheckCircle className="w-4 h-4 text-green-500 dark:text-green-400" />
-                        ),
-                        buttonBg: "bg-background dark:bg-background",
-                        buttonBorder:
-                          "border-green-500/30 dark:border-green-400/30",
-                        buttonHover:
-                          "hover:bg-green-500/10 dark:hover:bg-green-400/10",
-                      };
-
-                  return (
-                    <div
-                      className={`border-2 ${theme.border} rounded ${theme.bg} shadow flex-1 flex flex-col min-w-0 relative`}
-                    >
-                      <div
-                        className={`border-b ${theme.border} px-4 py-3 ${theme.headerBg} rounded-t flex-shrink-0`}
-                      >
-                        <div className="flex items-center gap-3">
-                          {theme.icon}
-                          <h4 className="text-sm font-semibold text-foreground">
-                            {isStreamingState
-                              ? `Output: ${currentStreamingExecutor.current}`
-                              : isSelectedExecutor
-                              ? `Output: ${selectedExecutor.executorId}`
-                              : "Workflow Complete"}
-                          </h4>
-                        </div>
-                      </div>
-                      <div
-                        ref={resultContentRef}
-                        className="p-4 overflow-auto flex-1 min-h-0 relative"
-                      >
-                        <div className="text-foreground whitespace-pre-wrap break-words text-sm pb-12">
-                          {workflowResult}
-                        </div>
-                      </div>
-                      {/* Sticky "View Full" button - always visible at bottom-right */}
-                      <div className="absolute bottom-3 right-3 pointer-events-auto">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setResultModalOpen(true)}
-                          className={`h-8 px-3 ${theme.buttonBg} ${theme.buttonBorder} ${theme.buttonHover} shadow-md`}
-                          title="Expand to full view"
-                        >
-                          <Maximize2 className="w-3.5 h-3.5 mr-1.5" />
-                          View Full
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-              {/* Enhanced Error Display */}
-              {workflowError && (
-                <div className="border-2 border-destructive/70 rounded bg-destructive/5 shadow flex-1 flex flex-col min-w-0 relative">
-                  <div className="border-b border-destructive/70 px-4 py-3 bg-destructive/10 rounded-t flex-shrink-0">
-                    <div className="flex items-center gap-3">
-                      <AlertCircle className="w-4 h-4 text-destructive" />
-                      <h4 className="text-sm font-semibold text-destructive">
-                        Workflow Failed
-                      </h4>
-                    </div>
-                  </div>
-                  <div
-                    ref={errorContentRef}
-                    className="p-4 overflow-auto flex-1 min-h-0 relative"
-                  >
-                    <div className="text-destructive whitespace-pre-wrap break-words text-sm pb-12">
-                      {workflowError}
-                    </div>
-                  </div>
-                  {/* Sticky "View Full" button - always visible at bottom-right */}
-                  <div className="absolute bottom-3 right-3 pointer-events-auto">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setErrorModalOpen(true)}
-                      className="h-8 px-3 bg-destructive/10 dark:bg-destructive/20 border-destructive/50 text-destructive hover:bg-destructive/20 dark:hover:bg-destructive/30 shadow-md"
-                      title="Expand to full view"
-                    >
-                      <Maximize2 className="w-3.5 h-3.5 mr-1.5" />
-                      View Full
-                    </Button>
-                  </div>
-                  {/* Scroll indicator - only show when scrollable */}
-                  {isErrorScrollable && (
-                    <div className="absolute bottom-14 left-1/2 transform -translate-x-1/2 pointer-events-none">
-                      <div className="bg-destructive/80 text-white px-2 py-1 rounded-full flex items-center gap-1 text-xs animate-bounce">
-                        <ChevronsDown className="w-3 h-3" />
-                        <span>Scroll for more</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="h-full flex items-center justify-center text-muted-foreground">
-              <p>Select a workflow node (executor) to see execution details</p>
-            </div>
+      {/* Side-by-side Layout: Workflow Graph (left) + Execution Timeline (right) */}
+      <div className="flex-1 min-h-0 flex gap-0">
+        {/* Left: Workflow Visualization */}
+        <div className="flex-1 min-w-0 transition-all duration-300">
+          {workflowInfo?.workflow_dump && (
+            <WorkflowFlow
+              workflowDump={workflowInfo.workflow_dump}
+              events={workflowEvents}
+              isStreaming={isStreaming}
+              onNodeSelect={handleNodeSelect}
+              className="h-full"
+              viewOptions={viewOptions}
+              onToggleViewOption={toggleViewOption}
+              layoutDirection={layoutDirection}
+              onLayoutDirectionChange={setLayoutDirection}
+            />
           )}
         </div>
+
+        {/* Right: Execution Timeline - inflates from left on first event */}
+        {showTimeline && (
+          <div
+            className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-out"
+            style={{
+              width: showTimeline ? '24rem' : '0',
+            }}
+          >
+            <div className="w-96 h-full">
+              <ExecutionTimeline
+                events={workflowEvents}
+                executorOutputs={executorOutputs.current}
+                currentExecutorId={activeExecutors[activeExecutors.length - 1] || null}
+                isStreaming={isStreaming}
+                onExecutorClick={handleNodeSelect}
+                selectedExecutorId={selectedExecutorId}
+                workflowResult={workflowResult}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Workflow Details Modal */}
@@ -1597,93 +1124,6 @@ export function WorkflowView({
         open={detailsModalOpen}
         onOpenChange={setDetailsModalOpen}
       />
-
-      {/* Result Full View Modal */}
-      <Dialog open={resultModalOpen} onOpenChange={setResultModalOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
-          <DialogHeader className="px-6 pt-6 flex-shrink-0">
-            <DialogTitle className="flex items-center gap-2">
-              <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-              Workflow Results
-            </DialogTitle>
-            <DialogClose onClose={() => setResultModalOpen(false)} />
-          </DialogHeader>
-
-          <div className="px-6 pb-6 overflow-y-auto flex-1">
-            <div className="space-y-4">
-              {/* Show per-executor outputs if we have multiple executors with output */}
-              {Object.values(executorOutputs.current).some(
-                (output) => output && output.trim().length > 0
-              ) ? (
-                Object.entries(executorOutputs.current).map(
-                  ([executorId, output]) =>
-                    output && (
-                      <div
-                        key={executorId}
-                        className="border-2 border-emerald-300 dark:border-emerald-600 rounded overflow-hidden"
-                      >
-                        <div className="bg-emerald-100 dark:bg-emerald-900/50 px-4 py-2 border-b border-emerald-300 dark:border-emerald-600">
-                          <h5 className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
-                            {executorId}
-                          </h5>
-                        </div>
-                        <div className="bg-emerald-50 dark:bg-emerald-950/50 p-4">
-                          <div className="text-emerald-700 dark:text-emerald-300 whitespace-pre-wrap break-words text-sm font-mono">
-                            {output}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                )
-              ) : (
-                /* Show workflow result for simple workflows without per-executor tracking */
-                <div className="bg-emerald-50 dark:bg-emerald-950/50 rounded border-2 border-emerald-300 dark:border-emerald-600 p-6">
-                  <div className="text-emerald-700 dark:text-emerald-300 whitespace-pre-wrap break-words text-sm font-mono">
-                    {workflowResult || "No output available"}
-                  </div>
-                </div>
-              )}
-
-              {/* Show workflow output if available */}
-              {workflowMetadata.current && (
-                <div className="border-2 border-blue-300 dark:border-blue-600 rounded overflow-hidden">
-                  <div className="bg-blue-100 dark:bg-blue-900/50 px-4 py-2 border-b border-blue-300 dark:border-blue-600">
-                    <h5 className="text-sm font-semibold text-blue-800 dark:text-blue-200">
-                      Workflow Output (Structured)
-                    </h5>
-                  </div>
-                  <div className="bg-blue-50 dark:bg-blue-950/50 p-4">
-                    <pre className="text-blue-700 dark:text-blue-300 whitespace-pre-wrap break-words text-xs font-mono">
-                      {JSON.stringify(workflowMetadata.current, null, 2)}
-                    </pre>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Error Full View Modal */}
-      <Dialog open={errorModalOpen} onOpenChange={setErrorModalOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
-          <DialogHeader className="px-6 pt-6 flex-shrink-0">
-            <DialogTitle className="flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-destructive" />
-              Workflow Error
-            </DialogTitle>
-            <DialogClose onClose={() => setErrorModalOpen(false)} />
-          </DialogHeader>
-
-          <div className="px-6 pb-6 overflow-y-auto flex-1">
-            <div className="bg-destructive/5 rounded border-2 border-destructive/70 p-6">
-              <div className="text-destructive whitespace-pre-wrap break-words text-sm font-mono">
-                {workflowError}
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* HIL (Human-in-the-Loop) Input Modal */}
       <HilInputModal

@@ -164,6 +164,8 @@ export function convertWorkflowDumpToEdges(
     id: `${connection.source}-${connection.target}`,
     source: connection.source,
     target: connection.target,
+    sourceHandle: "source",
+    targetHandle: "target",
     type: "default",
     animated: false,
     style: {
@@ -307,7 +309,7 @@ export function applyDagreLayout(
 
 /**
  * Process workflow events and extract node updates
- * Handles both new standard OpenAI events and legacy workflow events
+ * Handles both standard OpenAI events and fallback workflow_event format
  */
 export function processWorkflowEvents(
   events: ExtendedResponseStreamEvent[],
@@ -316,12 +318,29 @@ export function processWorkflowEvents(
   const nodeUpdates: Record<string, NodeUpdate> = {};
   let hasWorkflowStarted = false;
 
+  // Track the latest item ID for each executor to handle multiple runs
+  const latestItemIds: Record<string, string> = {};
+
   events.forEach((event) => {
     // Handle new standard OpenAI events
     if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
       const item = (event as any).item;
       if (item && item.type === "executor_action" && item.executor_id) {
         const executorId = item.executor_id;
+        const itemId = item.id;
+
+        // Track the latest item ID for this executor
+        if (event.type === "response.output_item.added") {
+          latestItemIds[executorId] = itemId;
+        }
+
+        // Only process this event if it's for the latest item ID of this executor
+        // This prevents older "done" events from overwriting newer "added" events
+        const isLatestItem = latestItemIds[executorId] === itemId;
+
+        if (!isLatestItem && event.type === "response.output_item.done") {
+          return; // Skip this old completion event
+        }
 
         let state: ExecutorState = "pending";
         let error: string | undefined;
@@ -400,16 +419,38 @@ export function processWorkflowEvents(
     }
   });
 
-  // If workflow has started and we have a start executor, set it to running
-  // (unless it already has a specific state from an ExecutorInvokedEvent)
+  // FALLBACK LOGIC: If workflow has started and we have a start executor, set it to running
+  // ONLY if it hasn't received any explicit executor events
+  // This prevents overwriting the actual state after the executor has run
   if (hasWorkflowStarted && startExecutorId && !nodeUpdates[startExecutorId]) {
-    nodeUpdates[startExecutorId] = {
-      nodeId: startExecutorId,
-      state: "running",
-      data: undefined,
-      error: undefined,
-      timestamp: new Date().toISOString(),
-    };
+    // Additional check: only set to running if we don't have completion/failure events for this executor
+    // This prevents setting to "running" after the executor has already completed
+    const hasCompletionEvent = events.some((event) => {
+      if (event.type === "response.output_item.done") {
+        const item = (event as any).item;
+        return item && item.type === "executor_action" && item.executor_id === startExecutorId;
+      }
+      if (event.type === "response.workflow_event.completed" && "data" in event && event.data) {
+        const data = event.data as any;
+        return data.executor_id === startExecutorId &&
+               (data.event_type === "ExecutorCompletedEvent" ||
+                data.event_type === "ExecutorFailedEvent" ||
+                data.event_type?.includes("Error") ||
+                data.event_type?.includes("Failed"));
+      }
+      return false;
+    });
+
+    // Only set to running if the executor hasn't completed yet
+    if (!hasCompletionEvent) {
+      nodeUpdates[startExecutorId] = {
+        nodeId: startExecutorId,
+        state: "running",
+        data: undefined,
+        error: undefined,
+        timestamp: new Date().toISOString(),
+      };
+    }
   }
 
   return nodeUpdates;
