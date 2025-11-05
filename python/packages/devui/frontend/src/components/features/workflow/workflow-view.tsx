@@ -293,7 +293,6 @@ export function WorkflowView({
   // Track per-item outputs (keyed by item.id, not executor_id to handle multiple runs)
   const itemOutputs = useRef<Record<string, string>>({});
   const currentStreamingItemId = useRef<string | null>(null);
-  const itemIdToExecutorId = useRef<Record<string, string>>({});
   const workflowMetadata = useRef<Record<string, unknown> | null>(null);
 
   // Conversation/Session management for workflows (enables checkpoint resume)
@@ -447,7 +446,6 @@ export function WorkflowView({
     setShowTimeline(false);
     setWorkflowResult("");
     itemOutputs.current = {};
-    itemIdToExecutorId.current = {};
     currentStreamingItemId.current = null;
     workflowMetadata.current = null;
 
@@ -576,7 +574,6 @@ export function WorkflowView({
       // Clear per-item outputs and metadata for new run
       setWorkflowResult("");
       itemOutputs.current = {};
-      itemIdToExecutorId.current = {};
       currentStreamingItemId.current = null;
       workflowMetadata.current = null;
 
@@ -637,8 +634,6 @@ export function WorkflowView({
             if (item && item.type === "executor_action" && item.executor_id && item.id) {
               // Track this item ID as the current streaming target
               currentStreamingItemId.current = item.id;
-              // Map item ID to executor ID for later lookup
-              itemIdToExecutorId.current[item.id] = item.executor_id;
               // Initialize output for this specific item (not executor!)
               if (!itemOutputs.current[item.id]) {
                 itemOutputs.current[item.id] = "";
@@ -704,7 +699,6 @@ export function WorkflowView({
               // Create synthetic item ID for fallback format (no real item.id available)
               const syntheticItemId = `fallback_${data.executor_id}_${Date.now()}`;
               currentStreamingItemId.current = syntheticItemId;
-              itemIdToExecutorId.current[syntheticItemId] = data.executor_id;
               // Initialize output for this item
               if (!itemOutputs.current[syntheticItemId]) {
                 itemOutputs.current[syntheticItemId] = "";
@@ -880,7 +874,6 @@ export function WorkflowView({
           // Handle executor action items
           if (item && item.type === "executor_action" && item.executor_id && item.id) {
             currentStreamingItemId.current = item.id;
-            itemIdToExecutorId.current[item.id] = item.executor_id;
             if (!itemOutputs.current[item.id]) {
               itemOutputs.current[item.id] = "";
             }

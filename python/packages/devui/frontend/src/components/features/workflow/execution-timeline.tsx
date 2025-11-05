@@ -189,10 +189,10 @@ export function ExecutionTimeline({
   const lastScrolledRunRef = useRef<string | null>(null);
   const timelineEndRef = useRef<HTMLDivElement>(null);
 
-  // Force re-render when streaming to show updated outputs from executorOutputs ref
-  // Note: executorOutputs is a ref (not state), so changes don't trigger re-renders automatically.
+  // Force re-render when streaming to show updated outputs from itemOutputs ref
+  // Note: itemOutputs is a ref (not state), so changes don't trigger re-renders automatically.
   // This polling approach ensures the UI updates during streaming. Could be optimized by:
-  // 1. Converting executorOutputs to state (increases re-renders)
+  // 1. Converting itemOutputs to state (increases re-renders)
   // 2. Using requestAnimationFrame instead of setInterval
   // 3. Having parent component trigger updates via callback
   useEffect(() => {
