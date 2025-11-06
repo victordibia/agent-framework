@@ -8,6 +8,7 @@ import {
   Shuffle,
   Zap,
   ArrowDown,
+  ArrowLeftRight,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -39,6 +40,7 @@ import {
   processWorkflowEvents,
   updateNodesWithEvents,
   updateEdgesWithSequenceAnalysis,
+  consolidateBidirectionalEdges,
   type NodeUpdate,
 } from "@/utils/workflow-utils";
 import type { ExtendedResponseStreamEvent } from "@/types";
@@ -59,7 +61,7 @@ function ViewOptionsPanel({
 }: {
   workflowDump?: Workflow;
   onNodeSelect?: (executorId: string, data: ExecutorNodeData) => void;
-  viewOptions: { showMinimap: boolean; showGrid: boolean; animateRun: boolean };
+  viewOptions: { showMinimap: boolean; showGrid: boolean; animateRun: boolean; consolidateBidirectionalEdges: boolean };
   onToggleViewOption?: (key: keyof typeof viewOptions) => void;
   layoutDirection: "LR" | "TB";
   onLayoutDirectionChange?: (direction: "LR" | "TB") => void;
@@ -134,6 +136,16 @@ function ViewOptionsPanel({
             </div>
             <Checkbox checked={viewOptions.animateRun} onChange={() => {}} />
           </DropdownMenuItem>
+          <DropdownMenuItem
+            className="flex items-center justify-between"
+            onClick={() => onToggleViewOption?.("consolidateBidirectionalEdges")}
+          >
+            <div className="flex items-center">
+              <ArrowLeftRight className="mr-2 h-4 w-4" />
+              Merge Bidirectional Edges
+            </div>
+            <Checkbox checked={viewOptions.consolidateBidirectionalEdges} onChange={() => {}} />
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="flex items-center justify-between"
@@ -192,6 +204,7 @@ interface WorkflowFlowProps {
     showMinimap: boolean;
     showGrid: boolean;
     animateRun: boolean;
+    consolidateBidirectionalEdges: boolean;
   };
   onToggleViewOption?: (
     key: keyof NonNullable<WorkflowFlowProps["viewOptions"]>
@@ -254,7 +267,7 @@ export const WorkflowFlow = memo(function WorkflowFlow({
   isStreaming,
   onNodeSelect,
   className = "",
-  viewOptions = { showMinimap: false, showGrid: true, animateRun: true },
+  viewOptions = { showMinimap: false, showGrid: true, animateRun: true, consolidateBidirectionalEdges: true },
   onToggleViewOption,
   layoutDirection = "LR",
   onLayoutDirectionChange,
@@ -272,17 +285,22 @@ export const WorkflowFlow = memo(function WorkflowFlow({
     );
     const edges = convertWorkflowDumpToEdges(workflowDump);
 
+    // Apply bidirectional edge consolidation if enabled
+    const finalEdges = viewOptions.consolidateBidirectionalEdges
+      ? consolidateBidirectionalEdges(edges)
+      : edges;
+
     // Apply auto-layout if we have nodes and edges
     const layoutedNodes =
       nodes.length > 0
-        ? applyDagreLayout(nodes, edges, layoutDirection)
+        ? applyDagreLayout(nodes, finalEdges, layoutDirection)
         : nodes;
 
     return {
       initialNodes: layoutedNodes,
-      initialEdges: edges,
+      initialEdges: finalEdges,
     };
-  }, [workflowDump, onNodeSelect, layoutDirection]);
+  }, [workflowDump, onNodeSelect, layoutDirection, viewOptions.consolidateBidirectionalEdges]);
 
   const [nodes, setNodes, onNodesChange] =
     useNodesState<Node<ExecutorNodeData>>(initialNodes);
@@ -323,31 +341,38 @@ export const WorkflowFlow = memo(function WorkflowFlow({
           currentEdges,
           events
         );
-        return updatedEdges;
+        // Apply consolidation if enabled (preserves updated styling from sequence analysis)
+        return viewOptions.consolidateBidirectionalEdges
+          ? consolidateBidirectionalEdges(updatedEdges)
+          : updatedEdges;
       });
     } else {
       // Reset all edges to default state when events are cleared
-      setEdges((currentEdges) =>
-        currentEdges.map((edge) => ({
+      setEdges((currentEdges) => {
+        const resetEdges = currentEdges.map((edge) => ({
           ...edge,
           animated: false,
           style: {
             stroke: "#6b7280", // Gray
             strokeWidth: 2,
           },
-        }))
-      );
+        }));
+        // Apply consolidation if enabled
+        return viewOptions.consolidateBidirectionalEdges
+          ? consolidateBidirectionalEdges(resetEdges)
+          : resetEdges;
+      });
     }
-  }, [events, setEdges]);
+  }, [events, setEdges, viewOptions.consolidateBidirectionalEdges]);
 
-  // Initialize nodes only when workflow structure changes (not on state updates)
+  // Initialize nodes and edges when workflow structure OR consolidation setting changes
   useEffect(() => {
     if (initialNodes.length > 0) {
       setNodes(initialNodes);
       setEdges(initialEdges);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowDump]); // Only re-initialize when workflowDump changes
+  }, [workflowDump, viewOptions.consolidateBidirectionalEdges]); // Re-initialize when workflow or consolidation toggle changes
 
   const onNodeClick = useCallback(
     (event: React.MouseEvent, node: Node<ExecutorNodeData>) => {

@@ -217,9 +217,27 @@ export function ExecutionTimeline({
 
       // Handle new standard OpenAI events
       if (event.type === "response.output_item.added") {
-        const item = (event as { item?: { type?: string; executor_id?: string; id?: string; created_at?: number } }).item;
+        const item = (event as { item?: { type?: string; executor_id?: string; id?: string; created_at?: number; metadata?: any } }).item;
+
+        // Handle both executor_action items AND message items from Magentic agents
         if (item && item.type === "executor_action" && item.executor_id && item.id) {
           const executorId = item.executor_id;
+          const itemId = item.id;
+          const runNumber = (runCount.get(executorId) || 0) + 1;
+          runCount.set(executorId, runNumber);
+
+          runs.push({
+            executorId,
+            executorName: executorId,
+            itemId,
+            state: "running",
+            output: itemOutputs[itemId] || "",
+            timestamp: uiTimestamp,
+            runNumber,
+          });
+        } else if (item && item.type === "message" && item.metadata?.agent_id && item.metadata?.source === "magentic" && item.id) {
+          // Handle message items from Magentic agents
+          const executorId = item.metadata.agent_id;
           const itemId = item.id;
           const runNumber = (runCount.get(executorId) || 0) + 1;
           runCount.set(executorId, runNumber);
@@ -238,7 +256,9 @@ export function ExecutionTimeline({
 
       // Handle completion events
       if (event.type === "response.output_item.done") {
-        const item = (event as { item?: { type?: string; executor_id?: string; id?: string; status?: string; error?: string } }).item;
+        const item = (event as { item?: { type?: string; executor_id?: string; id?: string; status?: string; error?: string; metadata?: any } }).item;
+
+        // Handle both executor_action items AND message items from Magentic agents
         if (item && item.type === "executor_action" && item.executor_id && item.id) {
           const itemId = item.id;
           // Find the run by ITEM ID (not executor ID!) to handle multiple runs correctly
@@ -256,6 +276,15 @@ export function ExecutionTimeline({
             if (item.status === "failed" && item.error) {
               existingRun.error = item.error;
             }
+          }
+        } else if (item && item.type === "message" && item.metadata?.agent_id && item.metadata?.source === "magentic" && item.id) {
+          // Handle message completion from Magentic agents
+          const itemId = item.id;
+          const existingRun = runs.find((r) => r.itemId === itemId);
+
+          if (existingRun) {
+            existingRun.state = item.status === "completed" ? "completed" : "failed";
+            existingRun.output = itemOutputs[itemId] || "";
           }
         }
       }

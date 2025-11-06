@@ -810,6 +810,27 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
     const approval = pendingApprovals.find((a) => a.request_id === request_id);
     if (!approval) return;
 
+    // Add user's decision as a visible message in the chat
+    const messageTimestamp = Math.floor(Date.now() / 1000);
+    const userDecisionMessage: import("@/types/openai").ConversationMessage = {
+      id: `user-approval-${Date.now()}`,
+      type: "message",
+      role: "user",
+      content: [
+        {
+          type: "function_approval_request",
+          request_id: request_id,
+          status: approved ? "approved" : "rejected",
+          function_call: approval.function_call,
+        } as import("@/types/openai").MessageFunctionApprovalRequestContent,
+      ],
+      status: "completed",
+      created_at: messageTimestamp,
+    };
+
+    const currentItems = useDevUIStore.getState().chatItems;
+    setChatItems([...currentItems, userDecisionMessage]);
+
     // Create approval response in OpenAI-compatible format
     const approvalInput: import("@/types/agent-framework").ResponseInputParam = [
       {
@@ -827,13 +848,12 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
     ];
 
     // Send approval response through the conversation
-    // We'll call handleSendMessage directly when invoked (it's defined below)
     const request: RunAgentRequest = {
       input: approvalInput,
       conversation_id: currentConversation?.id,
     };
 
-    // Remove from pending immediately (will be confirmed by backend event)
+    // Remove from pending immediately
     setPendingApprovals(
       useDevUIStore.getState().pendingApprovals.filter((a) => a.request_id !== request_id)
     );
@@ -846,6 +866,14 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
   const handleSendMessage = useCallback(
     async (request: RunAgentRequest) => {
       if (!selectedAgent) return;
+
+      // Check if this is a function approval response (internal, don't show in chat)
+      const isApprovalResponse = request.input.some(
+        (inputItem) =>
+          inputItem.type === "message" &&
+          Array.isArray(inputItem.content) &&
+          inputItem.content.some((c) => c.type === "function_approval_response")
+      );
 
       // Extract content from OpenAI format to create ConversationMessage
       const messageContent: import("@/types/openai").MessageContent[] = [];
@@ -880,17 +908,20 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
       // Capture timestamp once for both user and assistant messages
       const messageTimestamp = Math.floor(Date.now() / 1000); // Unix seconds
 
-      // Add user message to UI state (OpenAI ConversationMessage)
-      const userMessage: import("@/types/openai").ConversationMessage = {
-        id: `user-${Date.now()}`,
-        type: "message",
-        role: "user",
-        content: messageContent,
-        status: "completed",
-        created_at: messageTimestamp,
-      };
+      // Only add user message to UI if it's not an approval response (internal messages)
+      if (!isApprovalResponse && messageContent.length > 0) {
+        const userMessage: import("@/types/openai").ConversationMessage = {
+          id: `user-${Date.now()}`,
+          type: "message",
+          role: "user",
+          content: messageContent,
+          status: "completed",
+          created_at: messageTimestamp,
+        };
 
-      setChatItems([...useDevUIStore.getState().chatItems, userMessage]);
+        setChatItems([...useDevUIStore.getState().chatItems, userMessage]);
+      }
+
       setIsStreaming(true);
 
       // Create assistant message placeholder
@@ -1004,7 +1035,7 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
           if (openAIEvent.type === "response.function_approval.requested") {
             const approvalEvent = openAIEvent as import("@/types/openai").ResponseFunctionApprovalRequestedEvent;
 
-            // Add to pending approvals
+            // Add to pending approvals (for popup)
             setPendingApprovals([
               ...useDevUIStore.getState().pendingApprovals,
               {
@@ -1012,17 +1043,46 @@ export function AgentView({ selectedAgent, onDebugEvent }: AgentViewProps) {
                 function_call: approvalEvent.function_call,
               },
             ]);
-            continue; // Don't add approval requests to chat UI
+
+            // Also add to chat UI to show function call progress
+            const currentItems = useDevUIStore.getState().chatItems;
+            setChatItems(currentItems.map((item) => {
+              if (item.id === assistantMessage.id && item.type === "message") {
+                return {
+                  ...item,
+                  content: [
+                    ...item.content,
+                    {
+                      type: "function_approval_request",
+                      request_id: approvalEvent.request_id,
+                      status: "pending",
+                      function_call: approvalEvent.function_call,
+                    } as import("@/types/openai").MessageFunctionApprovalRequestContent,
+                  ],
+                  status: "in_progress" as const,
+                };
+              }
+              return item;
+            }));
+            continue;
           }
 
-          // Handle function approval response events
-          if (openAIEvent.type === "response.function_approval.responded") {
-            const responseEvent = openAIEvent as import("@/types/openai").ResponseFunctionApprovalRespondedEvent;
+          // Handle function result events (after function execution)
+          if (openAIEvent.type === "response.function_result.complete") {
+            const resultEvent = openAIEvent as import("@/types/openai").ResponseFunctionResultComplete;
 
-            // Remove from pending approvals
-            setPendingApprovals(
-              useDevUIStore.getState().pendingApprovals.filter((a) => a.request_id !== responseEvent.request_id)
-            );
+            // Add function result as a separate conversation item for clear visibility
+            const functionResultItem: import("@/types/openai").ConversationFunctionCallOutput = {
+              id: `result-${Date.now()}`,
+              type: "function_call_output",
+              call_id: resultEvent.call_id,
+              output: resultEvent.output,
+              status: resultEvent.status === "completed" ? "completed" : "incomplete",
+              created_at: Math.floor(Date.now() / 1000),
+            };
+
+            const currentItems = useDevUIStore.getState().chatItems;
+            setChatItems([...currentItems, functionResultItem]);
             continue;
           }
 

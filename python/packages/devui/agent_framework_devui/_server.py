@@ -5,7 +5,9 @@
 import inspect
 import json
 import logging
-from collections.abc import AsyncGenerator
+import os
+import secrets
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -14,14 +16,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from ._deployment import DeploymentManager
 from ._discovery import EntityDiscovery
 from ._executor import AgentFrameworkExecutor
 from ._mapper import MessageMapper
 from ._openai import OpenAIExecutor
 from .models import AgentFrameworkRequest, MetaResponse, OpenAIError
-from .models._discovery_models import DiscoveryResponse, EntityInfo
+from .models._discovery_models import Deployment, DeploymentConfig, DiscoveryResponse, EntityInfo
 
 logger = logging.getLogger(__name__)
+
+
+# No AuthMiddleware class needed - we'll use the decorator pattern instead
 
 
 class DevServer:
@@ -54,8 +60,32 @@ class DevServer:
         self.ui_mode = ui_mode
         self.executor: AgentFrameworkExecutor | None = None
         self.openai_executor: OpenAIExecutor | None = None
+        self.deployment_manager = DeploymentManager()
         self._app: FastAPI | None = None
         self._pending_entities: list[Any] | None = None
+
+    def _require_developer_mode(self, feature: str = "operation") -> None:
+        """Check if current mode allows developer operations.
+
+        Args:
+            feature: Name of the feature being accessed (for error message)
+
+        Raises:
+            HTTPException: If in user mode
+        """
+        if self.ui_mode == "user":
+            logger.warning(f"Blocked {feature} access in user mode")
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "message": f"Access denied: {feature} requires developer mode",
+                        "type": "permission_denied",
+                        "code": "developer_mode_required",
+                        "current_mode": self.ui_mode,
+                    }
+                },
+            )
 
     async def _ensure_executor(self) -> AgentFrameworkExecutor:
         """Ensure executor is initialized."""
@@ -240,6 +270,58 @@ class DevServer:
             allow_headers=["*"],
         )
 
+        # Add authentication middleware using decorator pattern
+        auth_required = os.getenv("AUTH_REQUIRED", "false").lower() == "true"
+        auth_token = os.getenv("DEVUI_AUTH_TOKEN", "")
+
+        if auth_required:
+            logger.info("Authentication middleware enabled")
+            if not auth_token:
+                logger.warning("Auth required but no token configured - all requests will be rejected")
+
+            @app.middleware("http")
+            async def auth_middleware(request: Request, call_next: Callable[[Request], Awaitable[Any]]) -> Any:
+                """Validate Bearer token authentication.
+
+                Skips authentication for health and static UI endpoints.
+                """
+                # Skip auth for health checks and static files
+                if request.url.path in ["/health", "/"] or request.url.path.startswith("/assets"):
+                    return await call_next(request)
+
+                # Check Authorization header
+                auth_header = request.headers.get("Authorization")
+                if not auth_header or not auth_header.startswith("Bearer "):
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "error": {
+                                "message": (
+                                    "Missing or invalid Authorization header. Expected: Authorization: Bearer <token>"
+                                ),
+                                "type": "authentication_error",
+                                "code": "missing_token",
+                            }
+                        },
+                    )
+
+                # Extract and validate token
+                token = auth_header.replace("Bearer ", "", 1).strip()
+                if not secrets.compare_digest(token, auth_token):
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "error": {
+                                "message": "Invalid authentication token",
+                                "type": "authentication_error",
+                                "code": "invalid_token",
+                            }
+                        },
+                    )
+
+                # Token valid, proceed
+                return await call_next(request)
+
         self._register_routes(app)
         self._mount_ui(app)
 
@@ -274,6 +356,7 @@ class DevServer:
                 capabilities={
                     "tracing": os.getenv("ENABLE_OTEL") == "true",
                     "openai_proxy": openai_executor.is_configured,
+                    "deployment": True,  # Deployment feature is available
                 },
             )
 
@@ -292,6 +375,7 @@ class DevServer:
         @app.get("/v1/entities/{entity_id}/info", response_model=EntityInfo)
         async def get_entity_info(entity_id: str) -> EntityInfo:
             """Get detailed information about a specific entity (triggers lazy loading)."""
+            self._require_developer_mode("entity details")
             try:
                 executor = await self._ensure_executor()
                 entity_info = executor.get_entity_info(entity_id)
@@ -382,18 +466,13 @@ class DevServer:
                     if hasattr(entity_obj, "executors") and entity_obj.executors:
                         executor_list = [getattr(ex, "executor_id", str(ex)) for ex in entity_obj.executors]
 
-                    # Check if workflow supports checkpointing
-                    from ._executor import workflow_supports_checkpointing
-
-                    supports_checkpointing = workflow_supports_checkpointing(entity_obj)
-
                     # Create copy of entity info and populate workflow-specific fields
+                    # Note: DevUI provides runtime checkpoint storage for ALL workflows via conversations
                     update_payload: dict[str, Any] = {
                         "workflow_dump": workflow_dump,
                         "input_schema": input_schema,
                         "input_type_name": input_type_name,
                         "start_executor_id": start_executor_id,
-                        "supports_checkpointing": supports_checkpointing,
                     }
                     if executor_list:
                         update_payload["executors"] = executor_list
@@ -415,6 +494,7 @@ class DevServer:
             This enables hot reload during development - edit entity code, call this endpoint,
             and the next execution will use the updated code without server restart.
             """
+            self._require_developer_mode("entity hot reload")
             try:
                 executor = await self._ensure_executor()
 
@@ -436,6 +516,108 @@ class DevServer:
             except Exception as e:
                 logger.error(f"Error reloading entity {entity_id}: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to reload entity: {e!s}") from e
+
+        # ============================================================================
+        # Deployment Endpoints
+        # ============================================================================
+
+        @app.post("/v1/deployments")
+        async def create_deployment(config: DeploymentConfig) -> StreamingResponse:
+            """Deploy entity to Azure Container Apps with streaming events.
+
+            Returns SSE stream of deployment progress events.
+            """
+            self._require_developer_mode("deployment")
+            try:
+                executor = await self._ensure_executor()
+
+                # Validate entity exists and supports deployment
+                entity_info = executor.get_entity_info(config.entity_id)
+                if not entity_info:
+                    raise HTTPException(status_code=404, detail=f"Entity {config.entity_id} not found")
+
+                if not entity_info.deployment_supported:
+                    reason = entity_info.deployment_reason or "Deployment not supported for this entity"
+                    raise HTTPException(status_code=400, detail=reason)
+
+                # Get entity path from metadata
+                from pathlib import Path
+
+                entity_path_str = entity_info.metadata.get("path")
+                if not entity_path_str:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Entity path not found in metadata (in-memory entities cannot be deployed)",
+                    )
+
+                entity_path = Path(entity_path_str)
+
+                # Stream deployment events
+                async def event_generator() -> AsyncGenerator[str, None]:
+                    async for event in self.deployment_manager.deploy(config, entity_path):
+                        # Format as SSE
+                        import json
+
+                        yield f"data: {json.dumps(event.model_dump())}\n\n"
+
+                return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error creating deployment: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to create deployment: {e!s}") from e
+
+        @app.get("/v1/deployments")
+        async def list_deployments(entity_id: str | None = None) -> list[Deployment]:
+            """List all deployments, optionally filtered by entity."""
+            self._require_developer_mode("deployment listing")
+            try:
+                return await self.deployment_manager.list_deployments(entity_id)
+            except Exception as e:
+                logger.error(f"Error listing deployments: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to list deployments: {e!s}") from e
+
+        @app.get("/v1/deployments/{deployment_id}")
+        async def get_deployment(deployment_id: str) -> Deployment:
+            """Get deployment by ID."""
+            self._require_developer_mode("deployment details")
+            try:
+                deployment = await self.deployment_manager.get_deployment(deployment_id)
+                if not deployment:
+                    raise HTTPException(status_code=404, detail=f"Deployment {deployment_id} not found")
+                return deployment
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error getting deployment: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get deployment: {e!s}") from e
+
+        @app.delete("/v1/deployments/{deployment_id}")
+        async def delete_deployment(deployment_id: str) -> dict[str, Any]:
+            """Delete deployment from Azure Container Apps."""
+            self._require_developer_mode("deployment deletion")
+            try:
+                await self.deployment_manager.delete_deployment(deployment_id)
+                return {"success": True, "message": f"Deployment {deployment_id} deleted successfully"}
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e)) from e
+            except Exception as e:
+                logger.error(f"Error deleting deployment: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to delete deployment: {e!s}") from e
+
+        # Convenience endpoint: deploy specific entity
+        @app.post("/v1/entities/{entity_id}/deploy")
+        async def deploy_entity(entity_id: str, config: DeploymentConfig) -> StreamingResponse:
+            """Convenience endpoint to deploy entity (shortcuts to /v1/deployments)."""
+            self._require_developer_mode("deployment")
+            # Override entity_id from path parameter
+            config.entity_id = entity_id
+            return await create_deployment(config)
+
+        # ============================================================================
+        # Response/Conversation Endpoints
+        # ============================================================================
 
         @app.post("/v1/responses")
         async def create_response(request: AgentFrameworkRequest, raw_request: Request) -> Any:
@@ -596,18 +778,34 @@ class DevServer:
                 return JSONResponse(status_code=500, content=error.to_dict())
 
         @app.get("/v1/conversations")
-        async def list_conversations(agent_id: str | None = None) -> dict[str, Any]:
-            """List conversations, optionally filtered by agent_id."""
+        async def list_conversations(
+            agent_id: str | None = None,
+            entity_id: str | None = None,
+            type: str | None = None,
+        ) -> dict[str, Any]:
+            """List conversations, optionally filtered by agent_id, entity_id, and/or type.
+
+            Query Parameters:
+            - agent_id: Filter by agent_id (for agent conversations)
+            - entity_id: Filter by entity_id (for workflow sessions or other entities)
+            - type: Filter by conversation type (e.g., "workflow_session")
+
+            Multiple filters can be combined (AND logic).
+            """
             try:
                 executor = await self._ensure_executor()
 
+                # Build filter criteria
+                filters = {}
                 if agent_id:
-                    # Filter by agent_id metadata
-                    conversations = executor.conversation_store.list_conversations_by_metadata({"agent_id": agent_id})
-                else:
-                    # Return all conversations (for InMemoryStore, list all)
-                    # Note: This assumes list_conversations_by_metadata({}) returns all
-                    conversations = executor.conversation_store.list_conversations_by_metadata({})
+                    filters["agent_id"] = agent_id
+                if entity_id:
+                    filters["entity_id"] = entity_id
+                if type:
+                    filters["type"] = type
+
+                # Apply filters
+                conversations = executor.conversation_store.list_conversations_by_metadata(filters)
 
                 return {
                     "object": "list",
@@ -692,9 +890,20 @@ class DevServer:
                 items, has_more = await executor.conversation_store.list_items(
                     conversation_id, limit=limit, after=after, order=order
                 )
+                # Handle both Pydantic models and dicts (some stores return raw dicts)
+                serialized_items = []
+                for item in items:
+                    if hasattr(item, "model_dump"):
+                        serialized_items.append(item.model_dump())
+                    elif isinstance(item, dict):
+                        serialized_items.append(item)
+                    else:
+                        logger.warning(f"Unexpected item type: {type(item)}, converting to dict")
+                        serialized_items.append(dict(item))
+
                 return {
                     "object": "list",
-                    "data": [item.model_dump() for item in items],
+                    "data": serialized_items,
                     "has_more": has_more,
                 }
             except ValueError as e:
@@ -713,12 +922,50 @@ class DevServer:
                 item = executor.conversation_store.get_item(conversation_id, item_id)
                 if not item:
                     raise HTTPException(status_code=404, detail="Item not found")
-                return item.model_dump()
+                result: dict[str, Any] = item.model_dump()
+                return result
             except HTTPException:
                 raise
             except Exception as e:
                 logger.error(f"Error getting item {item_id} from conversation {conversation_id}: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to get item: {e!s}") from e
+
+        @app.delete("/v1/conversations/{conversation_id}/items/{item_id}")
+        async def delete_conversation_item(conversation_id: str, item_id: str) -> dict[str, Any]:
+            """Delete conversation item - supports checkpoint deletion."""
+            try:
+                executor = await self._ensure_executor()
+
+                # Check if this is a checkpoint item
+                if item_id.startswith("checkpoint_"):
+                    # Extract checkpoint_id from item_id (format: "checkpoint_{checkpoint_id}")
+                    checkpoint_id = item_id[len("checkpoint_") :]
+                    storage = executor.checkpoint_manager.get_checkpoint_storage(conversation_id)
+                    deleted = await storage.delete_checkpoint(checkpoint_id)
+
+                    if not deleted:
+                        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+                    return {
+                        "id": item_id,
+                        "object": "item.deleted",
+                        "deleted": True,
+                    }
+                # For other items, delegate to conversation store (if it supports deletion)
+                raise HTTPException(status_code=501, detail="Deletion of non-checkpoint items not implemented")
+
+            except HTTPException:
+                raise
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e)) from e
+            except Exception as e:
+                logger.error(f"Error deleting item {item_id} from conversation {conversation_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to delete item: {e!s}") from e
+
+        # ============================================================================
+        # Checkpoint Management - Now handled through conversation items API
+        # Checkpoints are exposed as conversation items with type="checkpoint"
+        # ============================================================================
 
     async def _stream_execution(
         self, executor: AgentFrameworkExecutor, request: AgentFrameworkRequest

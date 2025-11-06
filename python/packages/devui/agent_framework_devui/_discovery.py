@@ -112,15 +112,9 @@ class EntityDiscovery:
                 f"Only 'directory' and 'in-memory' sources are supported."
             )
 
-        # Inject checkpoint storage for workflows that support checkpointing
-        if entity_info.type == "workflow" and entity_info.supports_checkpointing and checkpoint_manager:
-            # Get checkpoint storage adapter for this entity
-            checkpoint_storage = checkpoint_manager.get_checkpoint_storage(entity_id)
-
-            # Replace workflow's internal storage with our managed one
-            if hasattr(entity_obj, "_runner") and hasattr(entity_obj._runner, "context"):
-                entity_obj._runner.context._checkpoint_storage = checkpoint_storage
-                logger.info(f"Injected conversation-backed checkpoint storage for {entity_id}")
+        # Note: Checkpoint storage is now injected at runtime via run_stream() parameter,
+        # not at load time. This provides cleaner architecture and explicit control flow.
+        # See _executor.py _execute_workflow() for runtime checkpoint storage injection.
 
         # Enrich metadata with actual entity data
         # Don't pass entity_type if it's "unknown" - let inference determine the real type
@@ -134,6 +128,11 @@ class EntityDiscovery:
         # Preserve the original path from sparse metadata
         if "path" in entity_info.metadata:
             enriched_info.metadata["path"] = entity_info.metadata["path"]
+            # Now that we have the path, properly check deployment support
+            entity_path = Path(entity_info.metadata["path"])
+            deployment_supported, deployment_reason = self._check_deployment_support(entity_path, entity_info.source)
+            enriched_info.deployment_supported = deployment_supported
+            enriched_info.deployment_reason = deployment_reason
         enriched_info.metadata["lazy_loaded"] = True
         self._entities[entity_id] = enriched_info
 
@@ -350,6 +349,17 @@ class EntityDiscovery:
             elif not has_run_stream and not has_run:
                 logger.warning(f"Agent '{entity_id}' lacks both run() and run_stream() methods. May not work.")
 
+        # Check deployment support based on source
+        # For directory-based entities, we need the path to verify deployment support
+        deployment_supported = False
+        deployment_reason = "In-memory entities cannot be deployed (no source directory)"
+
+        if source == "directory":
+            # Directory-based entity - will be checked properly after enrichment when path is available
+            # For now, mark as potentially deployable - will be re-evaluated after enrichment
+            deployment_supported = True
+            deployment_reason = "Ready for deployment (pending path verification)"
+
         # Create EntityInfo with Agent Framework specifics
         return EntityInfo(
             id=entity_id,
@@ -366,6 +376,8 @@ class EntityDiscovery:
             executors=tools_list if entity_type == "workflow" else [],
             input_schema={"type": "string"},  # Default schema
             start_executor_id=tools_list[0] if tools_list and entity_type == "workflow" else None,
+            deployment_supported=deployment_supported,
+            deployment_reason=deployment_reason,
             metadata={
                 "source": "agent_framework_object",
                 "class_name": entity_object.__class__.__name__
@@ -449,6 +461,31 @@ class EntityDiscovery:
         # Has __init__.py but no specific file
         return "unknown"
 
+    def _check_deployment_support(self, entity_path: Path, source: str) -> tuple[bool, str | None]:
+        """Check if entity can be deployed to Azure Container Apps.
+
+        Args:
+            entity_path: Path to entity directory or file
+            source: Entity source ("directory" or "in_memory")
+
+        Returns:
+            Tuple of (supported, reason) explaining deployment eligibility
+        """
+        # In-memory entities cannot be deployed
+        if source == "in_memory":
+            return False, "In-memory entities cannot be deployed (no source directory)"
+
+        # File-based entities need a directory structure for deployment
+        if not entity_path.is_dir():
+            return False, "Only directory-based entities can be deployed"
+
+        # Must have __init__.py
+        if not (entity_path / "__init__.py").exists():
+            return False, "Missing __init__.py file"
+
+        # Passed all checks
+        return True, "Ready for deployment"
+
     def _register_sparse_entity(self, dir_path: Path) -> None:
         """Register entity with sparse metadata (no import).
 
@@ -458,6 +495,9 @@ class EntityDiscovery:
         entity_id = dir_path.name
         entity_type = self._detect_entity_type(dir_path)
 
+        # Check deployment support
+        deployment_supported, deployment_reason = self._check_deployment_support(dir_path, "directory")
+
         entity_info = EntityInfo(
             id=entity_id,
             name=entity_id.replace("_", " ").title(),
@@ -466,6 +506,8 @@ class EntityDiscovery:
             tools=[],  # Sparse - will be populated on load
             description="",  # Sparse - will be populated on load
             source="directory",
+            deployment_supported=deployment_supported,
+            deployment_reason=deployment_reason,
             metadata={
                 "path": str(dir_path),
                 "discovered": True,
@@ -484,6 +526,9 @@ class EntityDiscovery:
         """
         entity_id = file_path.stem
 
+        # Check deployment support (file-based entities cannot be deployed)
+        deployment_supported, deployment_reason = self._check_deployment_support(file_path, "directory")
+
         # File-based entities are typically agents, but we can't know for sure without importing
         entity_info = EntityInfo(
             id=entity_id,
@@ -493,6 +538,8 @@ class EntityDiscovery:
             tools=[],
             description="",
             source="directory",
+            deployment_supported=deployment_supported,
+            deployment_reason=deployment_reason,
             metadata={
                 "path": str(file_path),
                 "discovered": True,

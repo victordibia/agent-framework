@@ -21,35 +21,6 @@ from .models._discovery_models import EntityInfo
 logger = logging.getLogger(__name__)
 
 
-def workflow_supports_checkpointing(workflow: Any) -> bool:
-    """Check if workflow has checkpointing enabled.
-
-    Args:
-        workflow: Workflow object to check
-
-    Returns:
-        True if workflow was built with .with_checkpointing(), False otherwise
-    """
-    try:
-        # Check if workflow has the runner
-        if not hasattr(workflow, "_runner"):
-            return False
-
-        # Check if runner has context
-        if not hasattr(workflow._runner, "context"):
-            return False
-
-        # Check if context has checkpoint storage
-        runner_context = workflow._runner.context
-        if not hasattr(runner_context, "_checkpoint_storage"):
-            return False
-
-        # Check if storage is actually set (not None)
-        return runner_context._checkpoint_storage is not None
-    except Exception:
-        return False
-
-
 class EntityNotFoundError(Exception):
     """Raised when an entity is not found."""
 
@@ -330,37 +301,6 @@ class AgentFrameworkExecutor:
             # Still yield the error for backward compatibility
             yield {"type": "error", "message": f"Agent execution error: {e!s}"}
 
-    def _sync_workflow_id(self, workflow: Any) -> None:
-        """Sync workflow runner's workflow_id with workflow.id before execution.
-
-        CRITICAL FIX: Workflows may set workflow.id AFTER build() (e.g., workflow.id = "my-workflow"),
-        but the runner was created with the original UUID from __init__.
-        This sync ensures checkpoints are saved with the correct workflow_id that matches
-        what we use for queries, preventing checkpoint lookup failures.
-
-        This is essential for:
-        - Directory-based workflows where entity_id differs from workflow.id
-        - In-memory workflows where workflow.id is set after build()
-        - Cached workflow objects reused across requests
-
-        Args:
-            workflow: Workflow object to sync
-        """
-        if not hasattr(workflow, "_runner") or not hasattr(workflow._runner, "context"):
-            logger.debug("Workflow missing _runner or context, skipping workflow_id sync")
-            return
-
-        if not hasattr(workflow._runner.context, "set_workflow_id"):
-            logger.debug("Runner context missing set_workflow_id method, skipping sync")
-            return
-
-        if not workflow.id:
-            logger.warning("Workflow has None/empty id, cannot sync workflow_id")
-            return
-
-        workflow._runner.context.set_workflow_id(workflow.id)
-        logger.debug(f"Synced runner workflow_id to: {workflow.id}")
-
     async def _execute_workflow(
         self, workflow: Any, request: AgentFrameworkRequest, trace_collector: Any
     ) -> AsyncGenerator[Any, None]:
@@ -377,8 +317,32 @@ class AgentFrameworkExecutor:
         try:
             entity_id = request.get_entity_id()
 
-            # Always use DevUI's conversation-backed checkpoint storage (overrides workflow's built-in storage)
-            checkpoint_storage = self.checkpoint_manager.get_checkpoint_storage(entity_id)
+            # Get or create session conversation for checkpoint storage
+            conversation_id = request.get_conversation_id()
+            if not conversation_id:
+                # Create default session if not provided
+                import time
+                import uuid
+
+                conversation_id = f"session_{entity_id}_{uuid.uuid4().hex[:8]}"
+                logger.info(f"Created new workflow session: {conversation_id}")
+
+                # Create conversation in store
+                self.conversation_store.create_conversation(
+                    metadata={
+                        "entity_id": entity_id,
+                        "type": "workflow_session",
+                        "created_at": str(int(time.time())),
+                    },
+                    conversation_id=conversation_id,
+                )
+
+            # Get session-scoped checkpoint storage (InMemoryCheckpointStorage from conv_data)
+            # Each conversation has its own storage instance, providing automatic session isolation.
+            # This storage is passed to workflow.run_stream() which sets it as runtime override,
+            # ensuring all checkpoint operations (save/load) use THIS conversation's storage.
+            # The framework guarantees runtime storage takes precedence over build-time storage.
+            checkpoint_storage = self.checkpoint_manager.get_checkpoint_storage(conversation_id)
 
             # Check for HIL responses first
             hil_responses = self._extract_workflow_hil_responses(request.input)
@@ -391,13 +355,13 @@ class AgentFrameworkExecutor:
             elif hil_responses:
                 # Only auto-resume from latest checkpoint when we have HIL responses
                 # Regular "Run" clicks should start fresh, not resume from checkpoints
-                checkpoints = await checkpoint_storage.list_checkpoints(workflow_id=workflow.id)
+                checkpoints = await checkpoint_storage.list_checkpoints()  # No workflow_id filter needed!
                 if checkpoints:
                     latest = max(checkpoints, key=lambda cp: cp.timestamp)
                     checkpoint_id = latest.checkpoint_id
-                    logger.info(f"Auto-resuming from latest checkpoint for HIL response: {checkpoint_id}")
+                    logger.info(f"Auto-resuming from latest checkpoint in session {conversation_id}: {checkpoint_id}")
                 else:
-                    logger.warning(f"HIL responses received but no checkpoints found for workflow {workflow.id}")
+                    logger.warning(f"HIL responses received but no checkpoints in session {conversation_id}")
 
             if hil_responses:
                 # HIL continuation mode requires checkpointing
@@ -430,9 +394,6 @@ class AgentFrameworkExecutor:
                 # Future: Framework should support run_stream(checkpoint_id, responses) in single call
                 # (checkpoint_id is guaranteed to exist due to earlier validation)
                 logger.debug(f"Restoring checkpoint {checkpoint_id} then sending HIL responses")
-
-                # Sync workflow ID before HIL response handling
-                self._sync_workflow_id(workflow)
 
                 try:
                     # Step 1: Restore checkpoint to populate workflow's in-memory pending requests
@@ -491,10 +452,7 @@ class AgentFrameworkExecutor:
 
             elif checkpoint_id:
                 # Resume from checkpoint (explicit or auto-latest) using unified API
-                logger.info(f"Resuming workflow from checkpoint: {checkpoint_id}")
-
-                # Sync workflow ID before resuming
-                self._sync_workflow_id(workflow)
+                logger.info(f"Resuming workflow from checkpoint {checkpoint_id} in session {conversation_id}")
 
                 try:
                     async for event in workflow.run_stream(
@@ -519,10 +477,7 @@ class AgentFrameworkExecutor:
 
             else:
                 # First run - pass DevUI's checkpoint storage to enable checkpointing
-                logger.info("Starting workflow fresh with DevUI checkpoint storage")
-
-                # Sync workflow runner's workflow_id before execution
-                self._sync_workflow_id(workflow)
+                logger.info(f"Starting fresh workflow in session {conversation_id}")
 
                 parsed_input = await self._parse_workflow_input(workflow, request.input)
 

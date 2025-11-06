@@ -1089,38 +1089,104 @@ class MessageMapper:
                 if text:
                     events = []
 
-                    # Check if this is the first delta from this agent (need to emit executor marker)
-                    if context.get("current_executor_id") != agent_id:
-                        context["current_executor_id"] = agent_id
+                    # Track Magentic agent messages separately from regular messages
+                    # Use timestamp to ensure uniqueness for multiple runs of same agent
+                    magentic_key = f"magentic_message_{agent_id}"
+
+                    # Check if this is the first delta from this agent (need to create message container)
+                    if magentic_key not in context:
+                        # Create a unique message ID for this agent's streaming session
+                        message_id = f"msg_{agent_id}_{uuid4().hex[:8]}"
+                        context[magentic_key] = message_id
                         context["output_index"] = context.get("output_index", -1) + 1
 
-                        # Emit ExecutorActionItem to mark which agent is streaming
-                        # This allows frontend to track per-agent output
-                        item_id = f"agent_{agent_id}_{uuid4().hex[:8]}"
-                        context[f"agent_item_{agent_id}"] = item_id
-
-                        executor_item = ExecutorActionItem(
-                            type="executor_action",
-                            id=item_id,
-                            executor_id=agent_id,  # Use agent_id as executor_id
-                            status="in_progress",
-                            metadata={"agent_type": "magentic"},
+                        # Import required types
+                        from openai.types.responses import ResponseOutputMessage, ResponseOutputText
+                        from openai.types.responses.response_content_part_added_event import (
+                            ResponseContentPartAddedEvent,
                         )
+                        from openai.types.responses.response_output_item_added_event import ResponseOutputItemAddedEvent
 
+                        # Emit message output item (container for the agent's message)
+                        # This matches what _convert_agent_update does for regular agents
                         events.append(
-                            CustomResponseOutputItemAddedEvent(
+                            ResponseOutputItemAddedEvent(
                                 type="response.output_item.added",
                                 output_index=context["output_index"],
                                 sequence_number=self._next_sequence(context),
-                                item=executor_item,
+                                item=ResponseOutputMessage(
+                                    type="message",
+                                    id=message_id,
+                                    role="assistant",
+                                    content=[],
+                                    status="in_progress",
+                                    # Add metadata to identify this as a Magentic agent message
+                                    metadata={"agent_id": agent_id, "source": "magentic"},  # type: ignore[call-arg]
+                                ),
                             )
                         )
 
-                    # Emit text delta event (same as AgentRunResponseUpdate)
-                    events.append(self._create_text_delta_event(text, context))
+                        # Add content part for text (establishes the text container)
+                        events.append(
+                            ResponseContentPartAddedEvent(
+                                type="response.content_part.added",
+                                output_index=context["output_index"],
+                                content_index=0,
+                                item_id=message_id,
+                                sequence_number=self._next_sequence(context),
+                                part=ResponseOutputText(type="output_text", text="", annotations=[]),
+                            )
+                        )
+
+                    # Get the message ID for this agent
+                    message_id = context[magentic_key]
+
+                    # Emit text delta event using the message ID (matches regular agent behavior)
+                    events.append(
+                        ResponseTextDeltaEvent(
+                            type="response.output_text.delta",
+                            output_index=context["output_index"],
+                            content_index=0,  # Always 0 for single text content
+                            item_id=message_id,
+                            delta=text,
+                            logprobs=[],
+                            sequence_number=self._next_sequence(context),
+                        )
+                    )
                     return events
 
-                # For non-text deltas (function calls, etc.), emit as trace for debugging
+                # Handle function calls from Magentic agents
+                if getattr(event, "function_call_id", None) and getattr(event, "function_call_name", None):
+                    # Handle function call initiation
+                    function_call_id = getattr(event, "function_call_id", None)
+                    function_call_name = getattr(event, "function_call_name", None)
+                    function_call_arguments = getattr(event, "function_call_arguments", None)
+
+                    # Track function call for accumulating arguments
+                    context["active_function_calls"][function_call_id] = {
+                        "item_id": function_call_id,
+                        "name": function_call_name,
+                        "arguments_chunks": [],
+                    }
+
+                    # Emit function call output item
+                    return [
+                        ResponseOutputItemAddedEvent(
+                            type="response.output_item.added",
+                            item=ResponseFunctionToolCall(
+                                id=function_call_id,
+                                call_id=function_call_id,
+                                name=function_call_name,
+                                arguments=json.dumps(function_call_arguments) if function_call_arguments else "",
+                                type="function_call",
+                                status="in_progress",
+                            ),
+                            output_index=context["output_index"],
+                            sequence_number=self._next_sequence(context),
+                        )
+                    ]
+
+                # For other non-text deltas, emit as trace for debugging
                 return [
                     ResponseTraceEventComplete(
                         type="response.trace.completed",
@@ -1143,6 +1209,46 @@ class MessageMapper:
                 agent_id = getattr(event, "agent_id", "unknown_agent")
                 message = getattr(event, "message", None)
 
+                # Track Magentic agent messages
+                magentic_key = f"magentic_message_{agent_id}"
+
+                # Check if we were streaming for this agent
+                if magentic_key in context:
+                    # Mark the streaming message as complete
+                    message_id = context[magentic_key]
+
+                    # Import required types
+                    from openai.types.responses import ResponseOutputMessage
+                    from openai.types.responses.response_output_item_done_event import ResponseOutputItemDoneEvent
+
+                    # Extract text from ChatMessage for the completed message
+                    text = None
+                    if message and hasattr(message, "text"):
+                        text = message.text
+
+                    # Emit output_item.done to mark message as complete
+                    events = [
+                        ResponseOutputItemDoneEvent(
+                            type="response.output_item.done",
+                            output_index=context["output_index"],
+                            sequence_number=self._next_sequence(context),
+                            item=ResponseOutputMessage(
+                                type="message",
+                                id=message_id,
+                                role="assistant",
+                                content=[],  # Content already streamed via deltas
+                                status="completed",
+                                metadata={"agent_id": agent_id, "source": "magentic"},  # type: ignore[call-arg]
+                            ),
+                        )
+                    ]
+
+                    # Clean up context for this agent
+                    del context[magentic_key]
+
+                    logger.debug(f"MagenticAgentMessageEvent from {agent_id} marked streaming message as complete")
+                    return events
+                # No streaming occurred, create a complete message (shouldn't happen normally)
                 # Extract text from ChatMessage
                 text = None
                 if message and hasattr(message, "text"):
@@ -1159,13 +1265,16 @@ class MessageMapper:
 
                     output_message = ResponseOutputMessage(
                         type="message",
-                        id=f"msg_{uuid4().hex[:8]}",
+                        id=f"msg_{agent_id}_{uuid4().hex[:8]}",
                         role="assistant",
                         content=[text_content],
                         status="completed",
+                        metadata={"agent_id": agent_id, "source": "magentic"},  # type: ignore[call-arg]
                     )
 
-                    logger.debug(f"MagenticAgentMessageEvent from {agent_id} converted to output_item.added")
+                    logger.debug(
+                        f"MagenticAgentMessageEvent from {agent_id} converted to output_item.added (non-streaming)"
+                    )
                     return [
                         ResponseOutputItemAddedEvent(
                             type="response.output_item.added",

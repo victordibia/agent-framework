@@ -32,6 +32,9 @@ export interface AgentInfo {
   module_path?: string;
   required_env_vars?: EnvVarRequirement[];
   metadata?: Record<string, unknown>; // Backend metadata including lazy_loaded flag
+  // Deployment support
+  deployment_supported?: boolean;
+  deployment_reason?: string;
   // Agent-specific fields
   instructions?: string;
   model?: string;
@@ -71,7 +74,7 @@ export interface WorkflowInfo extends Omit<AgentInfo, "tools"> {
   input_schema: JSONSchema; // JSON Schema for workflow input
   input_type_name: string; // Human-readable input type name
   start_executor_id: string; // Entry point executor ID
-  supports_checkpointing?: boolean; // Whether workflow supports checkpoints
+  // Note: DevUI provides runtime checkpoint storage for ALL workflows via conversations
 }
 
 // OpenAI Conversations API (standard)
@@ -201,4 +204,55 @@ export interface PendingApproval {
     name: string;
     arguments: Record<string, unknown>;
   };
+}
+
+// Deployment types
+export interface DeploymentConfig {
+  entity_id: string;
+  resource_group: string;
+  app_name: string;
+  region?: string;
+  ui_mode?: string;
+  ui_enabled?: boolean;
+  stream?: boolean;
+}
+
+export interface DeploymentEvent {
+  type: string;
+  message: string;
+  url?: string;
+  auth_token?: string;
+}
+
+export interface Deployment {
+  id: string;
+  entity_id: string;
+  resource_group: string;
+  app_name: string;
+  region: string;
+  url: string;
+  status: string;
+  created_at: string;
+  error?: string;
+}
+
+// Workflow Session Management Types
+export interface WorkflowSession {
+  conversation_id: string;
+  entity_id: string;
+  created_at: number;
+  metadata: {
+    name?: string;
+    description?: string;
+    type: "workflow_session";
+    [key: string]: unknown;
+  };
+}
+
+export interface CheckpointInfo {
+  checkpoint_id: string;
+  workflow_id: string;
+  timestamp: number;
+  iteration_count: number;
+  metadata?: Record<string, unknown>;
 }

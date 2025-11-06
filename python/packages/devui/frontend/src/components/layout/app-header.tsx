@@ -14,6 +14,7 @@ import { useDevUIStore } from "@/stores";
 interface AppHeaderProps {
   agents: AgentInfo[];
   workflows: WorkflowInfo[];
+  entities?: (AgentInfo | WorkflowInfo)[];
   selectedItem?: AgentInfo | WorkflowInfo;
   onSelect: (item: AgentInfo | WorkflowInfo) => void;
   onBrowseGallery?: () => void;
@@ -24,6 +25,7 @@ interface AppHeaderProps {
 export function AppHeader({
   agents,
   workflows,
+  entities,
   selectedItem,
   onSelect,
   onBrowseGallery,
@@ -76,6 +78,7 @@ export function AppHeader({
         <EntitySelector
           agents={agents}
           workflows={workflows}
+          entities={entities}
           selectedItem={selectedItem}
           onSelect={onSelect}
           onBrowseGallery={onBrowseGallery}

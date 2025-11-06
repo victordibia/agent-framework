@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Literal, cast
 
 from agent_framework import AgentThread, ChatMessage
-from agent_framework._workflows._checkpoint import WorkflowCheckpoint
+from agent_framework._workflows._checkpoint import InMemoryCheckpointStorage
 from openai.types.conversations import Conversation, ConversationDeletedResource
 from openai.types.conversations.conversation_item import ConversationItem
 from openai.types.conversations.message import Message
@@ -114,22 +114,6 @@ class ConversationStore(ABC):
         pass
 
     @abstractmethod
-    async def add_checkpoint_item(self, conversation_id: str, checkpoint: WorkflowCheckpoint) -> ConversationItem:
-        """Add checkpoint as conversation item.
-
-        Args:
-            conversation_id: Checkpoint container conversation ID
-            checkpoint: WorkflowCheckpoint to store
-
-        Returns:
-            Created ConversationItem
-
-        Raises:
-            ValueError: If conversation not found
-        """
-        pass
-
-    @abstractmethod
     async def list_items(
         self, conversation_id: str, limit: int = 100, after: str | None = None, order: str = "asc"
     ) -> tuple[list[ConversationItem], bool]:
@@ -151,7 +135,7 @@ class ConversationStore(ABC):
 
     @abstractmethod
     def get_item(self, conversation_id: str, item_id: str) -> ConversationItem | None:
-        """Get specific conversation item.
+        """Get a specific conversation item by ID.
 
         Args:
             conversation_id: Conversation ID
@@ -211,16 +195,20 @@ class InMemoryConversationStore(ConversationStore):
     def create_conversation(
         self, metadata: dict[str, str] | None = None, conversation_id: str | None = None
     ) -> Conversation:
-        """Create a new conversation with underlying AgentThread."""
+        """Create a new conversation with underlying AgentThread and checkpoint storage."""
         conv_id = conversation_id or f"conv_{uuid.uuid4().hex}"
         created_at = int(time.time())
 
         # Create AgentThread with default ChatMessageStore
         thread = AgentThread()
 
+        # Create session-scoped checkpoint storage (one per conversation)
+        checkpoint_storage = InMemoryCheckpointStorage()
+
         self._conversations[conv_id] = {
             "id": conv_id,
             "thread": thread,
+            "checkpoint_storage": checkpoint_storage,  # Stored alongside thread
             "metadata": metadata or {},
             "created_at": created_at,
             "items": [],
@@ -331,36 +319,6 @@ class InMemoryConversationStore(ConversationStore):
                 self._item_index[conversation_id][conv_item.id] = conv_item
 
         return conv_items
-
-    async def add_checkpoint_item(self, conversation_id: str, checkpoint: WorkflowCheckpoint) -> ConversationItem:
-        """Add checkpoint as conversation item."""
-        conv_data = self._conversations.get(conversation_id)
-        if not conv_data:
-            raise ValueError(f"Conversation {conversation_id} not found")
-
-        from datetime import datetime
-
-        # Convert checkpoint to conversation item dict
-        item_dict = {
-            "id": checkpoint.checkpoint_id,
-            "type": CONVERSATION_ITEM_TYPE_CHECKPOINT,
-            "object": "conversation.item.checkpoint",
-            "created_at": int(datetime.fromisoformat(checkpoint.timestamp).timestamp()),
-            "checkpoint_data": checkpoint.to_dict(),
-        }
-
-        # Store as-is (checkpoints don't go to AgentThread)
-        conv_data["items"].append(item_dict)
-
-        # Update item index for O(1) lookup
-        if conversation_id not in self._item_index:
-            self._item_index[conversation_id] = {}
-
-        # Cast to ConversationItem for storage in index
-        conv_item = cast(ConversationItem, item_dict)
-        self._item_index[conversation_id][checkpoint.checkpoint_id] = conv_item
-
-        return conv_item
 
     async def list_items(
         self, conversation_id: str, limit: int = 100, after: str | None = None, order: str = "asc"
@@ -480,11 +438,22 @@ class InMemoryConversationStore(ConversationStore):
                 # Add function result items
                 items.extend(function_results)
 
-        # Include checkpoint items stored directly in conv_data["items"]
-        for stored_item in conv_data.get("items", []):
-            # Check if it's a checkpoint item (not already converted Message)
-            if isinstance(stored_item, dict) and stored_item.get("type") == CONVERSATION_ITEM_TYPE_CHECKPOINT:
-                items.append(cast(ConversationItem, stored_item))
+        # Include checkpoints from checkpoint storage as conversation items
+        checkpoint_storage = conv_data.get("checkpoint_storage")
+        if checkpoint_storage:
+            # Get all checkpoints for this conversation
+            checkpoints = await checkpoint_storage.list_checkpoints()
+            for checkpoint in checkpoints:
+                # Create a conversation item for each checkpoint
+                checkpoint_item = {
+                    "id": f"checkpoint_{checkpoint.checkpoint_id}",
+                    "type": "checkpoint",
+                    "checkpoint_id": checkpoint.checkpoint_id,
+                    "workflow_id": checkpoint.workflow_id,
+                    "timestamp": checkpoint.timestamp,
+                    "status": "completed",
+                }
+                items.append(cast(ConversationItem, checkpoint_item))
 
         # Apply pagination
         if order == "desc":
@@ -504,12 +473,9 @@ class InMemoryConversationStore(ConversationStore):
         return paginated_items, has_more
 
     def get_item(self, conversation_id: str, item_id: str) -> ConversationItem | None:
-        """Get specific conversation item - O(1) lookup via index."""
-        # Use index for O(1) lookup instead of linear search
-        conv_items = self._item_index.get(conversation_id)
-        if not conv_items:
-            return None
-
+        """Get a specific conversation item by ID."""
+        # Use the item index for O(1) lookup
+        conv_items = self._item_index.get(conversation_id, {})
         return conv_items.get(item_id)
 
     def get_thread(self, conversation_id: str) -> AgentThread | None:
@@ -536,163 +502,39 @@ class InMemoryConversationStore(ConversationStore):
 
 
 class CheckpointConversationManager:
-    """Manages checkpoints as conversation items.
+    """Manages checkpoint storage for workflow sessions - SESSION-SCOPED.
 
-    This provides the glue between workflow checkpointing and conversations API.
-    Checkpoints are stored as special conversation items in a dedicated
-    "checkpoint container" conversation per entity.
+    Simplified architecture: Each conversation has its own InMemoryCheckpointStorage
+    stored in conv_data["checkpoint_storage"]. This manager just retrieves it.
+    Session isolation comes from each conversation having a separate storage instance.
     """
 
     def __init__(self, conversation_store: ConversationStore):
+        # Runtime validation since we need specific implementation details
+        if not isinstance(conversation_store, InMemoryConversationStore):
+            raise TypeError("CheckpointConversationManager currently requires InMemoryConversationStore")
+        self._store: InMemoryConversationStore = conversation_store
+        # Keep public reference for backward compatibility with tests
         self.conversation_store = conversation_store
-        self._checkpoint_conv_cache: dict[str, str] = {}  # entity_id → conv_id
 
-    async def get_or_create_checkpoint_conversation(self, entity_id: str) -> str:
-        """Get or create checkpoint container conversation for entity.
-
-        Args:
-            entity_id: Entity ID (e.g., "spam_workflow")
-
-        Returns:
-            Conversation ID for checkpoint storage
-        """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        # Check cache
-        if entity_id in self._checkpoint_conv_cache:
-            return self._checkpoint_conv_cache[entity_id]
-
-        # Check if exists
-        conversations = self.conversation_store.list_conversations_by_metadata({
-            "entity_id": entity_id,
-            "type": CONVERSATION_TYPE_CHECKPOINT_CONTAINER,
-        })
-
-        if conversations:
-            conv_id = conversations[0].id
-            self._checkpoint_conv_cache[entity_id] = conv_id
-            return conv_id
-
-        # Create new checkpoint conversation
-        conv = self.conversation_store.create_conversation(
-            metadata={
-                "entity_id": entity_id,
-                "type": CONVERSATION_TYPE_CHECKPOINT_CONTAINER,
-                "name": f"Checkpoints for {entity_id}",
-            },
-            conversation_id=f"checkpoints_{entity_id}",
-        )
-
-        self._checkpoint_conv_cache[entity_id] = conv.id
-        logger.info(f"Created checkpoint conversation for entity {entity_id}")
-        return conv.id
-
-    async def save_checkpoint(self, entity_id: str, checkpoint: WorkflowCheckpoint) -> str:
-        """Save checkpoint as conversation item.
+    def get_checkpoint_storage(self, conversation_id: str) -> InMemoryCheckpointStorage:
+        """Get the checkpoint storage for a specific conversation.
 
         Args:
-            entity_id: Entity ID
-            checkpoint: Checkpoint to save
+            conversation_id: Conversation ID
 
         Returns:
-            Checkpoint ID
+            InMemoryCheckpointStorage instance for this conversation
+
+        Raises:
+            ValueError: If conversation not found
         """
-        conv_id = await self.get_or_create_checkpoint_conversation(entity_id)
-        await self.conversation_store.add_checkpoint_item(conv_id, checkpoint)
-        return checkpoint.checkpoint_id
+        # Access internal conversations dict (we know it's InMemoryConversationStore)
+        conv_data = self._store._conversations.get(conversation_id)
+        if not conv_data:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    async def load_checkpoint(self, entity_id: str, checkpoint_id: str) -> WorkflowCheckpoint | None:
-        """Load checkpoint by ID.
-
-        Args:
-            entity_id: Entity ID
-            checkpoint_id: Checkpoint ID
-
-        Returns:
-            WorkflowCheckpoint or None if not found
-        """
-        conv_id = await self.get_or_create_checkpoint_conversation(entity_id)
-
-        # Get specific item
-        item = self.conversation_store.get_item(conv_id, checkpoint_id)
-        if not item:
-            return None
-
-        # Type narrowing: verify it's a checkpoint item dict
-        if isinstance(item, dict) and item.get("type") == CONVERSATION_ITEM_TYPE_CHECKPOINT:
-            checkpoint_data = item.get("checkpoint_data")
-            if isinstance(checkpoint_data, dict):
-                return WorkflowCheckpoint.from_dict(checkpoint_data)
-
-        return None
-
-    async def list_checkpoints(self, entity_id: str, workflow_id: str | None = None) -> list[WorkflowCheckpoint]:
-        """List checkpoints for entity.
-
-        Args:
-            entity_id: Entity ID
-            workflow_id: Optional workflow ID filter
-
-        Returns:
-            List of WorkflowCheckpoint objects
-        """
-        conv_id = await self.get_or_create_checkpoint_conversation(entity_id)
-
-        # List all items
-        items, _ = await self.conversation_store.list_items(conv_id, limit=1000)
-
-        # Filter checkpoint items with proper type narrowing
-        checkpoints: list[WorkflowCheckpoint] = []
-        for item in items:
-            if isinstance(item, dict) and item.get("type") == CONVERSATION_ITEM_TYPE_CHECKPOINT:
-                checkpoint_data = item.get("checkpoint_data")
-                if isinstance(checkpoint_data, dict):
-                    checkpoints.append(WorkflowCheckpoint.from_dict(checkpoint_data))
-
-        # Filter by workflow_id if provided
-        if workflow_id:
-            checkpoints = [cp for cp in checkpoints if cp.workflow_id == workflow_id]
-
-        return checkpoints
-
-    def get_checkpoint_storage(self, entity_id: str) -> "ConversationItemCheckpointStorage":
-        """Get CheckpointStorage adapter for entity.
-
-        Args:
-            entity_id: Entity ID
-
-        Returns:
-            CheckpointStorage implementation backed by conversation items
-        """
-        return ConversationItemCheckpointStorage(self, entity_id)
-
-
-class ConversationItemCheckpointStorage:
-    """CheckpointStorage implementation using conversation items.
-
-    This adapter makes conversation items look like a CheckpointStorage
-    to the workflow runtime, allowing transparent checkpoint save/load.
-    """
-
-    def __init__(self, manager: CheckpointConversationManager, entity_id: str):
-        self.manager = manager
-        self.entity_id = entity_id
-
-    async def save_checkpoint(self, checkpoint: WorkflowCheckpoint) -> str:
-        """Save checkpoint (implements CheckpointStorage protocol)."""
-        return await self.manager.save_checkpoint(self.entity_id, checkpoint)
-
-    async def load_checkpoint(self, checkpoint_id: str) -> WorkflowCheckpoint | None:
-        """Load checkpoint (implements CheckpointStorage protocol)."""
-        return await self.manager.load_checkpoint(self.entity_id, checkpoint_id)
-
-    async def list_checkpoint_ids(self, workflow_id: str | None = None) -> list[str]:
-        """List checkpoint IDs (implements CheckpointStorage protocol)."""
-        checkpoints = await self.manager.list_checkpoints(self.entity_id, workflow_id)
-        return [cp.checkpoint_id for cp in checkpoints]
-
-    async def list_checkpoints(self, workflow_id: str | None = None) -> list[WorkflowCheckpoint]:
-        """List checkpoints (implements CheckpointStorage protocol)."""
-        return await self.manager.list_checkpoints(self.entity_id, workflow_id)
+        checkpoint_storage = conv_data["checkpoint_storage"]
+        if not isinstance(checkpoint_storage, InMemoryCheckpointStorage):
+            raise TypeError(f"Expected InMemoryCheckpointStorage but got {type(checkpoint_storage)}")
+        return checkpoint_storage

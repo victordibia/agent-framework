@@ -10,7 +10,7 @@ import { AgentView } from "@/components/features/agent";
 import { WorkflowView } from "@/components/features/workflow";
 import { Toast, ToastContainer } from "@/components/ui/toast";
 import { apiClient } from "@/services/api";
-import { PanelRightOpen, ChevronDown, ServerOff, Rocket } from "lucide-react";
+import { PanelRightOpen, ChevronLeft, ChevronDown, ServerOff, Rocket } from "lucide-react";
 import type {
   AgentInfo,
   WorkflowInfo,
@@ -23,6 +23,7 @@ export default function App() {
   // Entity state from Zustand
   const agents = useDevUIStore((state) => state.agents);
   const workflows = useDevUIStore((state) => state.workflows);
+  const entities = useDevUIStore((state) => state.entities);
   const selectedAgent = useDevUIStore((state) => state.selectedAgent);
   const isLoadingEntities = useDevUIStore((state) => state.isLoadingEntities);
   const entityError = useDevUIStore((state) => state.entityError);
@@ -36,6 +37,7 @@ export default function App() {
   // Entity actions
   const setAgents = useDevUIStore((state) => state.setAgents);
   const setWorkflows = useDevUIStore((state) => state.setWorkflows);
+  const setEntities = useDevUIStore((state) => state.setEntities);
   const selectEntity = useDevUIStore((state) => state.selectEntity);
   const updateAgent = useDevUIStore((state) => state.updateAgent);
   const updateWorkflow = useDevUIStore((state) => state.updateWorkflow);
@@ -44,12 +46,14 @@ export default function App() {
 
   // UI state from Zustand
   const showDebugPanel = useDevUIStore((state) => state.showDebugPanel);
+  const debugPanelMinimized = useDevUIStore((state) => state.debugPanelMinimized);
   const debugPanelWidth = useDevUIStore((state) => state.debugPanelWidth);
   const debugEvents = useDevUIStore((state) => state.debugEvents);
   const isResizing = useDevUIStore((state) => state.isResizing);
 
   // UI actions
   const setShowDebugPanel = useDevUIStore((state) => state.setShowDebugPanel);
+  const setDebugPanelMinimized = useDevUIStore((state) => state.setDebugPanelMinimized);
   const setDebugPanelWidth = useDevUIStore((state) => state.setDebugPanelWidth);
   const addDebugEvent = useDevUIStore((state) => state.addDebugEvent);
   const clearDebugEvents = useDevUIStore((state) => state.clearDebugEvents);
@@ -83,8 +87,9 @@ export default function App() {
         });
 
         // Single API call instead of two parallel calls to same endpoint
-        const { agents: agentList, workflows: workflowList } = await apiClient.getEntities();
+        const { entities: allEntities, agents: agentList, workflows: workflowList } = await apiClient.getEntities();
 
+        setEntities(allEntities);
         setAgents(agentList);
         setWorkflows(workflowList);
 
@@ -96,9 +101,7 @@ export default function App() {
 
         // Try to find entity from URL parameter first
         if (entityId) {
-          selectedEntity =
-            agentList.find((a) => a.id === entityId) ||
-            workflowList.find((w) => w.id === entityId);
+          selectedEntity = allEntities.find((e) => e.id === entityId);
 
           // If entity not found but was requested, show notification
           if (!selectedEntity) {
@@ -108,12 +111,9 @@ export default function App() {
 
         // Fallback to first available entity if URL entity not found
         if (!selectedEntity) {
-          selectedEntity =
-            agentList.length > 0
-              ? agentList[0]
-              : workflowList.length > 0
-              ? workflowList[0]
-              : undefined;
+          // Use the first entity from the backend's original order
+          // This respects the backend's intended display order
+          selectedEntity = allEntities.length > 0 ? allEntities[0] : undefined;
 
           // Update URL to match actual selected entity (or clear if none)
           if (selectedEntity) {
@@ -276,6 +276,7 @@ export default function App() {
         <AppHeader
           agents={[]}
           workflows={[]}
+          entities={[]}
           selectedItem={undefined}
           onSelect={() => {}}
           isLoading={false}
@@ -359,6 +360,7 @@ export default function App() {
       <AppHeader
         agents={agents}
         workflows={workflows}
+        entities={entities}
         selectedItem={selectedAgent}
         onSelect={handleEntitySelect}
         onBrowseGallery={() => setShowGallery(true)}
@@ -428,28 +430,65 @@ export default function App() {
                 {/* Right Panel - Debug */}
                 <div
                   className="flex-shrink-0 flex flex-col h-[calc(100vh-3.7rem)]"
-                  style={{ width: `${debugPanelWidth}px` }}
+                  style={{ width: debugPanelMinimized ? '2.5rem' : `${debugPanelWidth}px` }}
                 >
-                  <DebugPanel
-                    events={debugEvents}
-                    isStreaming={false} // Each view manages its own streaming state
-                    onClose={() => setShowDebugPanel(false)}
-                  />
-
-                  {/* Deploy Footer - Pinned to bottom */}
-                  <div className="border-t bg-muted/30 px-3 py-2.5 flex-shrink-0">
-                    <Button
-                      onClick={() => setShowDeployModal(true)}
-                      className="w-full"
-                      variant="outline"
-                      size="sm"
+                  {debugPanelMinimized ? (
+                    /* Minimized Debug Panel - Vertical Bar (fully clickable) */
+                    <div
+                      className="h-full w-10 bg-background border-l flex flex-col items-center py-2 cursor-pointer hover:bg-accent/50 transition-colors"
+                      onClick={() => setDebugPanelMinimized(false)}
+                      title="Expand debug panel"
                     >
-                      <Rocket className="h-3 w-3 mr-2 flex-shrink-0" />
-                      <span className="truncate text-xs">
-                        Deployment Guide for {selectedAgent?.name || "Agent"}
-                      </span>
-                    </Button>
-                  </div>
+                      {/* Expand button at top (visual affordance) */}
+                      <div className="h-8 w-8 flex items-center justify-center">
+                        <ChevronLeft className="h-4 w-4 text-muted-foreground" />
+                      </div>
+
+                      {/* Text and count centered in middle */}
+                      <div className="flex-1 flex flex-col items-center justify-center gap-2 pointer-events-none">
+                        <div
+                          className="text-xs text-muted-foreground select-none"
+                          style={{
+                            writingMode: 'vertical-rl',
+                            transform: 'rotate(180deg)'
+                          }}
+                        >
+                          Debug Panel
+                        </div>
+                        {debugEvents.length > 0 && (
+                          <div className="bg-primary text-primary-foreground rounded-full w-5 h-5 flex items-center justify-center"
+                          style={{ fontSize: '10px' }}>
+                            {debugEvents.length}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <DebugPanel
+                        events={debugEvents}
+                        isStreaming={false} // Each view manages its own streaming state
+                        onMinimize={() => setDebugPanelMinimized(true)}
+                      />
+
+                      {/* Deploy Footer - Pinned to bottom */}
+                      <div className="border-t bg-muted/30 px-3 py-2.5 flex-shrink-0">
+                        <Button
+                          onClick={() => setShowDeployModal(true)}
+                          className="w-full"
+                          variant="outline"
+                          size="sm"
+                        >
+                          <Rocket className="h-3 w-3 mr-2 flex-shrink-0" />
+                          <span className="truncate text-xs">
+                            {selectedAgent?.deployment_supported
+                              ? "Deploy to Azure"
+                              : "Deployment Guide"}
+                          </span>
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
               </>
             ) : uiMode === "developer" ? (
@@ -478,6 +517,7 @@ export default function App() {
         open={showDeployModal}
         onClose={() => setShowDeployModal(false)}
         agentName={selectedAgent?.name}
+        entity={selectedAgent}
       />
 
       {/* Toast Notification */}

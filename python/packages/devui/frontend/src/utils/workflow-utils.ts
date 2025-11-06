@@ -625,3 +625,67 @@ export function updateEdgesWithSequenceAnalysis(
     };
   });
 }
+
+/**
+ * Consolidate bidirectional edges into single edges with arrows on both ends
+ * This reduces visual clutter when edges go in both directions between nodes
+ *
+ * Smart handle selection algorithm:
+ * The current implementation keeps whichever edge was encountered first in the array.
+ * Since edges are typically created in workflow definition order (following the primary flow),
+ * this naturally keeps the "forward" edge and discards the "backward" one.
+ *
+ * For example, if the workflow defines:
+ * 1. coordinator → planner (primary flow)
+ * 2. planner → coordinator (feedback loop)
+ *
+ * We keep edge #1 and add bidirectional arrows. This ensures the edge follows
+ * the natural output→input handle connection of the primary flow direction.
+ *
+ * React Flow will automatically route the edge to avoid overlaps, and the
+ * bidirectional arrows indicate that communication flows both ways.
+ */
+export function consolidateBidirectionalEdges(edges: Edge[]): Edge[] {
+  const edgeMap = new Map<string, Edge>();
+  const bidirectionalKeys = new Set<string>();
+
+  edges.forEach(edge => {
+    const forwardKey = `${edge.source}-${edge.target}`;
+    const reverseKey = `${edge.target}-${edge.source}`;
+
+    // Check if we already have the reverse edge
+    if (edgeMap.has(reverseKey)) {
+      // Mark both keys as bidirectional
+      bidirectionalKeys.add(reverseKey);
+      bidirectionalKeys.add(forwardKey);
+
+      // Update the existing reverse edge to be bidirectional
+      const existingEdge = edgeMap.get(reverseKey)!;
+
+      // Keep the existing edge's handles (they follow the primary workflow direction)
+      // Add bidirectional arrows to show two-way communication
+      edgeMap.set(reverseKey, {
+        ...existingEdge,
+        markerStart: {
+          type: 'arrow' as const,
+          width: 20,
+          height: 20,
+        },
+        markerEnd: {
+          type: 'arrow' as const,
+          width: 20,
+          height: 20,
+        },
+        data: {
+          ...existingEdge.data,
+          isBidirectional: true,
+        },
+      });
+    } else if (!bidirectionalKeys.has(forwardKey)) {
+      // Only add if this isn't the reverse of a bidirectional pair
+      edgeMap.set(forwardKey, edge);
+    }
+  });
+
+  return Array.from(edgeMap.values());
+}

@@ -413,6 +413,18 @@ export interface MessageInputFile {
   filename?: string;
 }
 
+// DevUI Extension: Function approval request content (shown in chat)
+export interface MessageFunctionApprovalRequestContent {
+  type: "function_approval_request";
+  request_id: string;
+  status: "pending" | "approved" | "rejected";
+  function_call: {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+}
+
 // DevUI Extension: Function approval response content
 export interface MessageFunctionApprovalResponseContent {
   type: "function_approval_response";
@@ -461,6 +473,7 @@ export type MessageContent =
   | MessageOutputImage
   | MessageOutputFile
   | MessageOutputData
+  | MessageFunctionApprovalRequestContent
   | MessageFunctionApprovalResponseContent;
 
 // Message item (user/assistant messages with content)

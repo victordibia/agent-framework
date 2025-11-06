@@ -20,7 +20,6 @@ import {
   ChevronRight,
   ChevronDown,
   Info,
-  PanelRightClose,
 } from "lucide-react";
 import type { ExtendedResponseStreamEvent } from "@/types";
 
@@ -95,7 +94,7 @@ interface TraceEventData extends EventDataBase {
 interface DebugPanelProps {
   events: ExtendedResponseStreamEvent[];
   isStreaming?: boolean;
-  onClose?: () => void;
+  onMinimize?: () => void;
 }
 
 // Helper: Extract function result from DevUI custom event
@@ -1598,7 +1597,7 @@ function ToolEventItem({ event }: { event: ExtendedResponseStreamEvent }) {
 export function DebugPanel({
   events,
   isStreaming = false,
-  onClose,
+  onMinimize,
 }: DebugPanelProps) {
   return (
     <div className="flex-1 border-l flex flex-col min-h-0">
@@ -1615,15 +1614,15 @@ export function DebugPanel({
               Tools
             </TabsTrigger>
           </TabsList>
-          {onClose && (
+          {onMinimize && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={onClose}
+              onClick={onMinimize}
               className="h-8 w-8 p-0 flex-shrink-0"
-              title="Hide debug panel"
+              title="Minimize debug panel"
             >
-              <PanelRightClose className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4" />
             </Button>
           )}
         </div>

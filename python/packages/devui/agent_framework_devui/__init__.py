@@ -96,6 +96,8 @@ def serve(
     ui_enabled: bool = True,
     tracing_enabled: bool = False,
     ui_mode: str = "developer",
+    auth_enabled: bool = False,
+    auth_token: str | None = None,
 ) -> None:
     """Launch Agent Framework DevUI with simple API.
 
@@ -109,6 +111,8 @@ def serve(
         ui_enabled: Whether to enable the UI
         tracing_enabled: Whether to enable OpenTelemetry tracing
         ui_mode: UI interface mode - 'developer' shows debug tools, 'user' shows simplified interface
+        auth_enabled: Whether to enable Bearer token authentication
+        auth_token: Custom authentication token (auto-generated if not provided with auth_enabled=True)
     """
     import re
 
@@ -121,6 +125,24 @@ def serve(
     # Validate port parameter
     if not isinstance(port, int) or not (1 <= port <= 65535):
         raise ValueError(f"Invalid port: {port}. Must be integer between 1 and 65535")
+
+    # Handle authentication configuration
+    if auth_enabled:
+        import os
+        import secrets
+
+        # Auto-generate token if not provided
+        if not auth_token:
+            auth_token = secrets.token_urlsafe(32)
+            logger.info("🔒 Authentication enabled with auto-generated token")
+            logger.info(f"🔑 Auth token: {auth_token}")
+            logger.info("💡 Use this token in Authorization: Bearer <token> header")
+        else:
+            logger.info("🔒 Authentication enabled with custom token")
+
+        # Set environment variables for server to use
+        os.environ["AUTH_REQUIRED"] = "true"
+        os.environ["DEVUI_AUTH_TOKEN"] = auth_token
 
     # Configure tracing environment variables if enabled
     if tracing_enabled:

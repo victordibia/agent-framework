@@ -199,6 +199,21 @@ Options:
   --config        YAML config file
   --tracing       none|framework|workflow|all
   --reload        Enable auto-reload
+  --mode          developer|user (default: developer)
+  --auth          Enable Bearer token authentication
+```
+
+### UI Modes
+
+- **developer** (default): Full access - debug panel, entity details, hot reload, deployment
+- **user**: Simplified UI with restricted APIs - only chat and conversation management
+
+```bash
+# Development
+devui ./agents
+
+# Production (user-facing)
+devui ./agents --mode user --auth
 ```
 
 ## Key Endpoints
@@ -300,18 +315,28 @@ These custom extensions are clearly namespaced and can be safely ignored by stan
 
 ## Security
 
-DevUI is designed as a **sample application for local development** and should not be exposed to untrusted networks or used in production environments.
+DevUI is designed as a **sample application for local development** and should not be exposed to untrusted networks without proper authentication.
+
+**For production deployments:**
+
+```bash
+# User mode with authentication (recommended)
+devui ./agents --mode user --auth --host 0.0.0.0
+```
+
+This restricts developer APIs (reload, deployment, entity details) and requires Bearer token authentication.
 
 **Security features:**
 
+- User mode restricts developer-facing APIs
+- Optional Bearer token authentication via `--auth`
 - Only loads entities from local directories or in-memory registration
 - No remote code execution capabilities
 - Binds to localhost (127.0.0.1) by default
-- All samples must be manually downloaded and reviewed before running
 
 **Best practices:**
 
-- Never expose DevUI to the internet
+- Use `--mode user --auth` for any deployment exposed to end users
 - Review all agent/workflow code before running
 - Only load entities from trusted sources
 - Use `.env` files for sensitive credentials (never commit them)

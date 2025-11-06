@@ -15,8 +15,6 @@ from agent_framework import (
 )
 
 from agent_framework_devui._conversations import (
-    CONVERSATION_ITEM_TYPE_CHECKPOINT,
-    CONVERSATION_TYPE_CHECKPOINT_CONTAINER,
     CheckpointConversationManager,
     InMemoryConversationStore,
 )
@@ -84,28 +82,18 @@ def test_workflow():
 
 
 class TestCheckpointConversationManager:
-    """Test CheckpointConversationManager functionality."""
+    """Test CheckpointConversationManager functionality - CONVERSATION-SCOPED."""
 
     @pytest.mark.asyncio
-    async def test_create_checkpoint_conversation(self, checkpoint_manager):
-        """Test checkpoint conversation creation."""
+    async def test_conversation_scoped_checkpoint_save(self, checkpoint_manager, test_workflow):
+        """Test checkpoint save in a specific conversation."""
         entity_id = "test_entity"
+        conversation_id = f"conv_{entity_id}_test123"
 
-        # Get or create checkpoint conversation
-        conv_id = await checkpoint_manager.get_or_create_checkpoint_conversation(entity_id)
-
-        assert conv_id == f"checkpoints_{entity_id}"
-
-        # Verify conversation exists
-        conv = checkpoint_manager.conversation_store.get_conversation(conv_id)
-        assert conv is not None
-        assert conv.metadata["type"] == CONVERSATION_TYPE_CHECKPOINT_CONTAINER
-        assert conv.metadata["entity_id"] == entity_id
-
-    @pytest.mark.asyncio
-    async def test_save_checkpoint(self, checkpoint_manager, test_workflow):
-        """Test saving checkpoint as conversation item."""
-        entity_id = "test_entity"
+        # Create conversation first
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
 
         # Create test checkpoint
         import uuid
@@ -113,40 +101,149 @@ class TestCheckpointConversationManager:
         from agent_framework._workflows._checkpoint import WorkflowCheckpoint
 
         checkpoint = WorkflowCheckpoint(
-            checkpoint_id=str(uuid.uuid4()), workflow_id=test_workflow.id, messages={}, shared_state={}
+            checkpoint_id=str(uuid.uuid4()), workflow_id=test_workflow.id, messages={}, shared_state={"test": "data"}
         )
 
-        # Save checkpoint via manager
-        checkpoint_id = await checkpoint_manager.save_checkpoint(entity_id, checkpoint)
+        # Get checkpoint storage for this conversation and save
+        storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
+        checkpoint_id = await storage.save_checkpoint(checkpoint)
 
         assert checkpoint_id == checkpoint.checkpoint_id
 
-        # Verify checkpoint stored as conversation item
-        conv_id = await checkpoint_manager.get_or_create_checkpoint_conversation(entity_id)
-        items, _ = await checkpoint_manager.conversation_store.list_items(conv_id)
-
-        # Items might be ConversationItem objects or dicts, handle both
-        checkpoint_items = []
-        for item in items:
-            item_type = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
-            if item_type == CONVERSATION_ITEM_TYPE_CHECKPOINT:
-                checkpoint_items.append(item)
-
-        assert len(checkpoint_items) == 1
-        first_item = checkpoint_items[0]
-        item_id = first_item.get("id") if isinstance(first_item, dict) else getattr(first_item, "id", None)
-        item_data = (
-            first_item.get("checkpoint_data")
-            if isinstance(first_item, dict)
-            else getattr(first_item, "checkpoint_data", None)
-        )
-        assert item_id == checkpoint_id
-        assert item_data["checkpoint_id"] == checkpoint_id
+        # Verify checkpoint stored in THIS conversation only
+        checkpoints = await storage.list_checkpoints()
+        assert len(checkpoints) == 1
+        assert checkpoints[0].checkpoint_id == checkpoint.checkpoint_id
 
     @pytest.mark.asyncio
-    async def test_load_checkpoint(self, checkpoint_manager, test_workflow):
-        """Test loading checkpoint from conversation items."""
+    async def test_conversation_isolation(self, checkpoint_manager, test_workflow):
+        """Test that conversations are isolated - checkpoints don't leak between conversations."""
         entity_id = "test_entity"
+        conv_a = f"conv_{entity_id}_aaa"
+        conv_b = f"conv_{entity_id}_bbb"
+
+        # Create two conversations
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conv_a
+        )
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conv_b
+        )
+
+        # Save checkpoint to conversation A
+        import uuid
+
+        from agent_framework._workflows._checkpoint import WorkflowCheckpoint
+
+        checkpoint_a = WorkflowCheckpoint(
+            checkpoint_id=str(uuid.uuid4()),
+            workflow_id=test_workflow.id,
+            messages={},
+            shared_state={"conversation": "A"},
+        )
+        storage_a = checkpoint_manager.get_checkpoint_storage(conv_a)
+        await storage_a.save_checkpoint(checkpoint_a)
+
+        # Verify conversation A has checkpoint
+        checkpoints_a = await storage_a.list_checkpoints()
+        assert len(checkpoints_a) == 1
+
+        # Verify conversation B has NO checkpoints (isolation)
+        storage_b = checkpoint_manager.get_checkpoint_storage(conv_b)
+        checkpoints_b = await storage_b.list_checkpoints()
+        assert len(checkpoints_b) == 0
+
+    @pytest.mark.asyncio
+    async def test_list_checkpoints_in_session(self, checkpoint_manager, test_workflow):
+        """Test listing checkpoints within a session."""
+        entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_test456"
+
+        # Create session
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
+
+        # Save multiple checkpoints
+        import uuid
+
+        from agent_framework._workflows._checkpoint import WorkflowCheckpoint
+
+        storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
+        checkpoint_ids = []
+        for i in range(3):
+            checkpoint = WorkflowCheckpoint(
+                checkpoint_id=str(uuid.uuid4()),
+                workflow_id=test_workflow.id,
+                messages={},
+                shared_state={"iteration": i},
+            )
+            saved_id = await storage.save_checkpoint(checkpoint)
+            checkpoint_ids.append(saved_id)
+
+        # List checkpoints using the storage
+        checkpoints_list = await storage.list_checkpoints()
+        assert len(checkpoints_list) == 3
+
+        # Verify all checkpoint IDs are present
+        loaded_ids = [cp.checkpoint_id for cp in checkpoints_list]
+        for saved_id in checkpoint_ids:
+            assert saved_id in loaded_ids
+
+    @pytest.mark.asyncio
+    async def test_checkpoints_appear_as_conversation_items(self, checkpoint_manager, test_workflow):
+        """Test that checkpoints appear as conversation items through the standard API."""
+        entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_items_test"
+
+        # Create session
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
+
+        # Save multiple checkpoints
+
+        from agent_framework._workflows._checkpoint import WorkflowCheckpoint
+
+        storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
+        checkpoint_ids = []
+        for i in range(2):
+            checkpoint = WorkflowCheckpoint(
+                checkpoint_id=f"checkpoint_{i}",
+                workflow_id=test_workflow.id,
+                messages={},
+                shared_state={"iteration": i},
+            )
+            saved_id = await storage.save_checkpoint(checkpoint)
+            checkpoint_ids.append(saved_id)
+
+        # List conversation items - should include checkpoints
+        items, has_more = await checkpoint_manager.conversation_store.list_items(conversation_id)
+
+        # Filter for checkpoint items
+        checkpoint_items = [item for item in items if (isinstance(item, dict) and item.get("type") == "checkpoint")]
+
+        # Verify we have the correct number of checkpoint items
+        assert len(checkpoint_items) == 2, f"Expected 2 checkpoint items, got {len(checkpoint_items)}"
+
+        # Verify checkpoint items have correct structure
+        for item in checkpoint_items:
+            assert item.get("type") == "checkpoint"
+            assert item.get("checkpoint_id") in checkpoint_ids
+            assert item.get("workflow_id") == test_workflow.id
+            assert "timestamp" in item
+            assert item.get("id").startswith("checkpoint_")  # ID format: checkpoint_{checkpoint_id}
+
+    @pytest.mark.asyncio
+    async def test_load_checkpoint_from_session(self, checkpoint_manager, test_workflow):
+        """Test loading checkpoint from a specific session."""
+        entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_test789"
+
+        # Create session
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
 
         # Create and save a checkpoint
         import uuid
@@ -160,53 +257,35 @@ class TestCheckpointConversationManager:
             shared_state={"test_key": "test_value"},
         )
 
-        # Save via manager
-        await checkpoint_manager.save_checkpoint(entity_id, original_checkpoint)
+        # Save to this session
+        storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
+        await storage.save_checkpoint(original_checkpoint)
 
-        # Load checkpoint via manager
-        loaded_checkpoint = await checkpoint_manager.load_checkpoint(entity_id, original_checkpoint.checkpoint_id)
+        # Load checkpoint from this session
+        loaded_checkpoint = await storage.load_checkpoint(original_checkpoint.checkpoint_id)
 
         assert loaded_checkpoint is not None
         assert loaded_checkpoint.checkpoint_id == original_checkpoint.checkpoint_id
         assert loaded_checkpoint.workflow_id == original_checkpoint.workflow_id
         assert loaded_checkpoint.shared_state == {"test_key": "test_value"}
 
-    @pytest.mark.asyncio
-    async def test_list_checkpoints(self, checkpoint_manager, test_workflow):
-        """Test listing checkpoints for entity."""
-        entity_id = "test_entity"
 
-        # Create and save multiple checkpoints
-        import uuid
-
-        from agent_framework._workflows._checkpoint import WorkflowCheckpoint
-
-        for i in range(2):
-            checkpoint = WorkflowCheckpoint(
-                checkpoint_id=str(uuid.uuid4()),
-                workflow_id=test_workflow.id,
-                messages={},
-                shared_state={"iteration": i},
-            )
-            await checkpoint_manager.save_checkpoint(entity_id, checkpoint)
-
-        # List checkpoints
-        checkpoints = await checkpoint_manager.list_checkpoints(entity_id, workflow_id=test_workflow.id)
-
-        assert len(checkpoints) == 2
-        assert all(cp.workflow_id == test_workflow.id for cp in checkpoints)
-
-
-class TestCheckpointStorageAdapter:
-    """Test ConversationItemCheckpointStorage adapter."""
+class TestCheckpointStorage:
+    """Test InMemoryCheckpointStorage per conversation - SESSION-SCOPED."""
 
     @pytest.mark.asyncio
     async def test_checkpoint_storage_protocol(self, checkpoint_manager, test_workflow):
         """Test that adapter implements CheckpointStorage protocol."""
         entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_adapter_test"
 
-        # Get storage adapter
-        storage = checkpoint_manager.get_checkpoint_storage(entity_id)
+        # Create session
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
+
+        # Get storage adapter for this session
+        storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
 
         # Create test checkpoint
         import uuid
@@ -241,13 +320,20 @@ class TestIntegration:
 
     @pytest.mark.asyncio
     async def test_manual_checkpoint_save_via_injected_storage(self, checkpoint_manager, test_workflow):
-        """Test manual checkpoint save via injected storage."""
+        """Test manual checkpoint save via build-time storage injection."""
         entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_integration_test1"
 
-        # Get checkpoint storage for entity
-        checkpoint_storage = checkpoint_manager.get_checkpoint_storage(entity_id)
+        # Create session conversation
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
 
-        # Inject storage into workflow (simulating what _discovery.py does)
+        # Get checkpoint storage for this session
+        checkpoint_storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
+
+        # Set build-time storage (equivalent to .with_checkpointing() at build time)
+        # Note: In production, DevUI uses runtime injection via run_stream() parameter
         if hasattr(test_workflow, "_runner") and hasattr(test_workflow._runner, "context"):
             test_workflow._runner.context._checkpoint_storage = checkpoint_storage
 
@@ -261,18 +347,24 @@ class TestIntegration:
         )
         await checkpoint_storage.save_checkpoint(checkpoint)
 
-        # Verify checkpoint is accessible via manager
-        manager_checkpoints = await checkpoint_manager.list_checkpoints(entity_id, workflow_id=test_workflow.id)
-        assert len(manager_checkpoints) > 0
-        assert manager_checkpoints[0].checkpoint_id == checkpoint.checkpoint_id
+        # Verify checkpoint is accessible via storage (in this session)
+        storage_checkpoints = await checkpoint_storage.list_checkpoints()
+        assert len(storage_checkpoints) > 0
+        assert storage_checkpoints[0].checkpoint_id == checkpoint.checkpoint_id
 
     @pytest.mark.asyncio
     async def test_checkpoint_roundtrip_via_storage(self, checkpoint_manager, test_workflow):
         """Test checkpoint save/load roundtrip via storage adapter."""
         entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_integration_test2"
 
-        # Inject storage
-        checkpoint_storage = checkpoint_manager.get_checkpoint_storage(entity_id)
+        # Create session conversation
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
+
+        # Set build-time storage for testing
+        checkpoint_storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
         test_workflow._runner.context._checkpoint_storage = checkpoint_storage
 
         # Create checkpoint
@@ -294,8 +386,8 @@ class TestIntegration:
         assert loaded.checkpoint_id == checkpoint_id
         assert loaded.shared_state == {"ready_to_resume": True}
 
-        # Verify checkpoint is accessible via manager (for UI to list checkpoints)
-        checkpoints = await checkpoint_manager.list_checkpoints(entity_id, workflow_id=test_workflow.id)
+        # Verify checkpoint is accessible via storage (for UI to list checkpoints)
+        checkpoints = await checkpoint_storage.list_checkpoints()
         assert len(checkpoints) > 0
         assert checkpoints[0].checkpoint_id == checkpoint_id
 
@@ -304,19 +396,28 @@ class TestIntegration:
         """Test that workflows automatically save checkpoints to our conversation-backed storage.
 
         This is the critical end-to-end test that verifies the entire checkpoint flow:
-        1. Storage is injected into workflow
+        1. Storage is set as build-time storage (simulates .with_checkpointing())
         2. Workflow runs and pauses at HIL point (IDLE_WITH_PENDING_REQUESTS status)
         3. Framework automatically saves checkpoint to our storage
         4. Checkpoint is accessible via manager for UI to list/resume
+
+        Note: In production, DevUI passes checkpoint_storage to run_stream() as runtime parameter.
+        This test uses build-time injection to verify framework's checkpoint auto-save behavior.
         """
         entity_id = "test_entity"
+        conversation_id = f"session_{entity_id}_integration_test3"
 
-        # Inject our storage BEFORE running workflow
-        checkpoint_storage = checkpoint_manager.get_checkpoint_storage(entity_id)
+        # Create session conversation
+        checkpoint_manager.conversation_store.create_conversation(
+            metadata={"entity_id": entity_id, "type": "workflow_session"}, conversation_id=conversation_id
+        )
+
+        # Set build-time storage to test automatic checkpoint saves
+        checkpoint_storage = checkpoint_manager.get_checkpoint_storage(conversation_id)
         test_workflow._runner.context._checkpoint_storage = checkpoint_storage
 
         # Verify no checkpoints initially
-        checkpoints_before = await checkpoint_manager.list_checkpoints(entity_id, workflow_id=test_workflow.id)
+        checkpoints_before = await checkpoint_storage.list_checkpoints()
         assert len(checkpoints_before) == 0
 
         # Run workflow until it reaches IDLE_WITH_PENDING_REQUESTS (after checkpoint is created)
@@ -334,7 +435,7 @@ class TestIntegration:
         assert saw_request_event, "Test workflow should have emitted RequestInfoEvent"
 
         # Verify checkpoint was AUTOMATICALLY saved to our storage by the framework
-        checkpoints_after = await checkpoint_manager.list_checkpoints(entity_id, workflow_id=test_workflow.id)
+        checkpoints_after = await checkpoint_storage.list_checkpoints()
         assert len(checkpoints_after) > 0, "Workflow should have auto-saved checkpoint at HIL pause"
 
         # Verify checkpoint has correct workflow_id

@@ -12,6 +12,10 @@ import {
   Workflow as WorkflowIcon,
   RefreshCw,
   Loader2,
+  Trash2,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { LoadingState } from "@/components/ui/loading-state";
 import { WorkflowInputForm } from "./workflow-input-form";
@@ -21,6 +25,7 @@ import { WorkflowFlow } from "./workflow-flow";
 import { WorkflowDetailsModal } from "./workflow-details-modal";
 import { ExecutionTimeline } from "./execution-timeline";
 import { apiClient } from "@/services/api";
+import { useDevUIStore } from "@/stores/devuiStore";
 import type {
   WorkflowInfo,
   ExtendedResponseStreamEvent,
@@ -43,6 +48,108 @@ import {
 } from "@/components/ui/select";
 
 type DebugEventHandler = (event: ExtendedResponseStreamEvent | "clear") => void;
+
+// Compact Checkpoint Selector Component
+interface CheckpointSelectorProps {
+  conversationId: string | undefined;
+  selectedCheckpoint: string | undefined;
+  onCheckpointSelect: (checkpointId: string | undefined) => void;
+}
+
+function CheckpointSelector({
+  conversationId,
+  selectedCheckpoint,
+  onCheckpointSelect,
+}: CheckpointSelectorProps) {
+  const [checkpoints, setCheckpoints] = useState<Array<{
+    checkpoint_id: string;
+    timestamp: number;
+  }>>([]);
+  const [loading, setLoading] = useState(false);
+  const addToast = useDevUIStore((state) => state.addToast);
+
+  // Load checkpoints when conversation changes
+  useEffect(() => {
+    if (!conversationId) {
+      setCheckpoints([]);
+      return;
+    }
+
+    const loadCheckpoints = async () => {
+      setLoading(true);
+      try {
+        // Fetch conversation items and filter for checkpoints
+        const response = await apiClient.listConversationItems(conversationId, { limit: 100 });
+        const checkpointItems = response.data
+          .filter((item: any) => item.type === 'checkpoint')
+          .map((item: any) => ({
+            checkpoint_id: item.checkpoint_id,
+            timestamp: item.timestamp,
+          }));
+        setCheckpoints(checkpointItems);
+      } catch (error) {
+        console.error("Failed to load checkpoints:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadCheckpoints();
+  }, [conversationId]);
+
+  const handleDelete = async (checkpointId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    if (!confirm("Delete this checkpoint?")) return;
+
+    try {
+      // Delete through conversation items API
+      const itemId = `checkpoint_${checkpointId}`;
+      await apiClient.deleteConversationItem(conversationId!, itemId);
+      addToast({ message: "Checkpoint deleted", type: "success" });
+      setCheckpoints(prev => prev.filter(cp => cp.checkpoint_id !== checkpointId));
+      if (selectedCheckpoint === checkpointId) {
+        onCheckpointSelect(undefined);
+      }
+    } catch (error) {
+      console.error("Failed to delete checkpoint:", error);
+      addToast({ message: "Failed to delete checkpoint", type: "error" });
+    }
+  };
+
+  if (!conversationId || checkpoints.length === 0) {
+    return null; // Hide when no conversation or no checkpoints
+  }
+
+  return (
+    <Select
+      value={selectedCheckpoint || "none"}
+      onValueChange={(value) => onCheckpointSelect(value === "none" ? undefined : value)}
+      disabled={loading}
+    >
+      <SelectTrigger className="w-[200px] h-9 text-xs">
+        <SelectValue placeholder="Resume from..." />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="none">Start Fresh (No Checkpoint)</SelectItem>
+        {checkpoints.map((cp) => (
+          <div key={cp.checkpoint_id} className="flex items-center justify-between group">
+            <SelectItem value={cp.checkpoint_id} className="flex-1">
+              Checkpoint {new Date(cp.timestamp * 1000).toLocaleString()}
+            </SelectItem>
+            <button
+              onClick={(e) => handleDelete(cp.checkpoint_id, e)}
+              className="p-1 opacity-0 group-hover:opacity-100 hover:text-red-600 transition-opacity"
+              title="Delete checkpoint"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </div>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 // Smart Run Workflow Button Component
 interface RunWorkflowButtonProps {
@@ -275,6 +382,7 @@ export function WorkflowView({
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [timelineMinimized, setTimelineMinimized] = useState(false);
   const [workflowResult, setWorkflowResult] = useState<string>("");
 
   // HIL (Human-in-the-Loop) state
@@ -295,31 +403,37 @@ export function WorkflowView({
   const currentStreamingItemId = useRef<string | null>(null);
   const workflowMetadata = useRef<Record<string, unknown> | null>(null);
 
-  // Conversation/Session management for workflows (enables checkpoint resume)
-  const [selectedConversationId, setSelectedConversationId] = useState<
-    string | null
-  >(null);
+  // Session management from store (replaces old checkpoint management)
+  const currentSession = useDevUIStore((state) => state.currentSession);
+  const availableSessions = useDevUIStore((state) => state.availableSessions);
+  const loadingSessions = useDevUIStore((state) => state.loadingSessions);
+  const setCurrentSession = useDevUIStore((state) => state.setCurrentSession);
+  const setAvailableSessions = useDevUIStore((state) => state.setAvailableSessions);
+  const setLoadingSessions = useDevUIStore((state) => state.setLoadingSessions);
+  const addSession = useDevUIStore((state) => state.addSession);
+  const removeSession = useDevUIStore((state) => state.removeSession);
+  const addToast = useDevUIStore((state) => state.addToast);
 
-  // Checkpoint management
-  const [availableCheckpoints, setAvailableCheckpoints] = useState<
-    Array<{
-      checkpoint_id: string;
-      workflow_id: string;
-      timestamp: number;
-    }>
-  >([]);
+  // Selected checkpoint for resume (local state)
   const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
 
   // View options state
   const [viewOptions, setViewOptions] = useState(() => {
     const saved = localStorage.getItem("workflowViewOptions");
-    return saved
-      ? JSON.parse(saved)
-      : {
-          showMinimap: false,
-          showGrid: true,
-          animateRun: false,
-        };
+    const defaults = {
+      showMinimap: false,
+      showGrid: true,
+      animateRun: false,
+      consolidateBidirectionalEdges: true,
+    };
+
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // Merge with defaults to ensure new properties exist
+      return { ...defaults, ...parsed };
+    }
+
+    return defaults;
   });
 
   // Layout direction state
@@ -397,40 +511,8 @@ export function WorkflowView({
         const info = await apiClient.getWorkflowInfo(selectedWorkflow.id);
         setWorkflowInfo(info);
 
-        // Load checkpoints if workflow supports them
-        if (info.supports_checkpointing) {
-          try {
-            // Find checkpoint container conversation
-            const { data: conversations } = await apiClient.listConversations(selectedWorkflow.id);
-            const checkpointConv = conversations.find(
-              conv => conv.metadata?.type === "checkpoint_container"
-            );
-
-            if (checkpointConv) {
-              // List checkpoint items from conversation
-              const { data: items } = await apiClient.listConversationItems(checkpointConv.id);
-
-              // Extract checkpoints
-              const checkpoints = items
-                .filter((item: any) => item.type === "checkpoint")
-                .map((item: any) => ({
-                  checkpoint_id: item.checkpoint_data.checkpoint_id,
-                  workflow_id: item.checkpoint_data.workflow_id,
-                  timestamp: item.created_at,
-                }));
-
-              setAvailableCheckpoints(checkpoints);
-            } else {
-              // No checkpoint conversation yet (will be created on first run)
-              setAvailableCheckpoints([]);
-            }
-          } catch (error) {
-            console.error("Error loading checkpoints:", error);
-            setAvailableCheckpoints([]);
-          }
-        } else {
-          setAvailableCheckpoints([]);
-        }
+        // Note: Checkpoints are now loaded per-session via WorkflowSessionManager
+        // When user selects a session, checkpoints will be loaded for that session
       } catch (error) {
         setWorkflowInfo(null);
         console.error("Error loading workflow info:", error);
@@ -449,20 +531,101 @@ export function WorkflowView({
     currentStreamingItemId.current = null;
     workflowMetadata.current = null;
 
-    // Generate conversation_id ONLY if we don't have one OR workflow ID changed
-    // This ensures the same conversation_id is used throughout a single workflow session
-    setSelectedConversationId((prevId) => {
-      const shouldCreateNew =
-        !prevId || !prevId.includes(selectedWorkflow.id);
-      if (shouldCreateNew) {
-        const newId = `workflow_session_${selectedWorkflow.id}_${Date.now()}`;
-        return newId;
-      }
-      return prevId;
-    });
-
     loadWorkflowInfo();
   }, [selectedWorkflow.id, selectedWorkflow.type]);
+
+  // Load sessions when workflow is selected
+  useEffect(() => {
+    const loadSessions = async () => {
+      if (!workflowInfo) return;
+
+      setLoadingSessions(true);
+      try {
+        const response = await apiClient.listWorkflowSessions(workflowInfo.id);
+
+        // If no sessions exist, auto-create one
+        if (response.data.length === 0) {
+          const newSession = await apiClient.createWorkflowSession(workflowInfo.id, {
+            name: `Conversation ${new Date().toLocaleString()}`,
+          });
+          setAvailableSessions([newSession]);
+          setCurrentSession(newSession);
+        } else {
+          setAvailableSessions(response.data);
+          // Auto-select first session if none selected
+          if (!currentSession) {
+            const firstSession = response.data[0];
+            setCurrentSession(firstSession);
+            await handleSessionChange(firstSession);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load sessions:", error);
+        addToast({ message: "Failed to load sessions", type: "error" });
+      } finally {
+        setLoadingSessions(false);
+      }
+    };
+
+    loadSessions();
+  }, [workflowInfo?.id]);
+
+  // Handle session change - just clear checkpoint selection
+  const handleSessionChange = useCallback(
+    async (session: typeof currentSession) => {
+      if (!session || !workflowInfo) return;
+      // Clear selected checkpoint when switching sessions
+      // CheckpointSelector component will load checkpoints automatically
+      setSelectedCheckpointId(null);
+    },
+    [workflowInfo]
+  );
+
+  // Handle session select from dropdown
+  const handleSessionSelect = useCallback(
+    async (sessionId: string) => {
+      const session = availableSessions.find(s => s.conversation_id === sessionId);
+      if (session) {
+        setCurrentSession(session);
+        await handleSessionChange(session);
+      }
+    },
+    [availableSessions, setCurrentSession, handleSessionChange]
+  );
+
+  // Handle new session creation
+  const handleNewSession = useCallback(async () => {
+    if (!workflowInfo) return;
+
+    try {
+      const newSession = await apiClient.createWorkflowSession(workflowInfo.id, {
+        name: `Conversation ${new Date().toLocaleString()}`,
+      });
+      addSession(newSession);
+      setCurrentSession(newSession);
+      await handleSessionChange(newSession);
+      addToast({ message: "New session created", type: "success" });
+    } catch (error) {
+      console.error("Failed to create session:", error);
+      addToast({ message: "Failed to create session", type: "error" });
+    }
+  }, [workflowInfo, addSession, setCurrentSession, handleSessionChange, addToast]);
+
+  // Handle session deletion
+  const handleDeleteSession = useCallback(async () => {
+    if (!currentSession || !workflowInfo) return;
+
+    if (!confirm("Delete this session? All checkpoints will be lost.")) return;
+
+    try {
+      await apiClient.deleteWorkflowSession(workflowInfo.id, currentSession.conversation_id);
+      removeSession(currentSession.conversation_id);
+      addToast({ message: "Session deleted", type: "success" });
+    } catch (error) {
+      console.error("Failed to delete session:", error);
+      addToast({ message: "Failed to delete session", type: "error" });
+    }
+  }, [currentSession, workflowInfo, removeSession, addToast]);
 
   const handleNodeSelect = (executorId: string) => {
     setSelectedExecutorId(executorId);
@@ -583,7 +746,7 @@ export function WorkflowView({
       try {
         const request = {
           input_data: inputData,
-          conversation_id: selectedConversationId || undefined,  // Pass conversation for checkpoint support
+          conversation_id: currentSession?.conversation_id || undefined,  // Pass session conversation_id for checkpoint support
           checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint if any
         };
 
@@ -640,8 +803,18 @@ export function WorkflowView({
               }
             }
 
-            // Handle workflow output messages (from ctx.yield_output)
-            if (item && item.type === "message" && item.content) {
+            // Handle message items from Magentic agents (Option A implementation)
+            if (item && item.type === "message" && item.metadata?.source === "magentic" && item.id) {
+              // Track this message ID as the current streaming target for Magentic agents
+              currentStreamingItemId.current = item.id;
+              // Initialize output for this message
+              if (!itemOutputs.current[item.id]) {
+                itemOutputs.current[item.id] = "";
+              }
+            }
+
+            // Handle workflow output messages (from ctx.yield_output) - different from agent messages
+            if (item && item.type === "message" && !item.metadata?.source && item.content) {
               // Extract text from message content
               for (const content of item.content) {
                 if (content.type === "output_text" && content.text) {
@@ -801,7 +974,7 @@ export function WorkflowView({
         setIsStreaming(false);
       }
     },
-    [selectedWorkflow, onDebugEvent, workflowInfo]
+    [selectedWorkflow, onDebugEvent, workflowInfo, currentSession, selectedCheckpointId]
   );
 
   // Handle HIL response submission
@@ -825,7 +998,7 @@ export function WorkflowView({
             ],
           },
         ] as any, // OpenAI Responses API format, cast to satisfy TypeScript
-        conversation_id: selectedConversationId || undefined,
+        conversation_id: currentSession?.conversation_id || undefined,
         checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint
       };
 
@@ -942,7 +1115,7 @@ export function WorkflowView({
       console.error("HIL submission error:", error);
       setIsStreaming(false);
     }
-  }, [selectedWorkflow, hilResponses, onDebugEvent]);
+  }, [selectedWorkflow, hilResponses, onDebugEvent, currentSession, selectedCheckpointId]);
 
   // Show loading state when workflow is being loaded
   if (workflowLoading) {
@@ -1004,67 +1177,80 @@ export function WorkflowView({
             </Button>
           </div>
 
-          {/* Run Workflow Controls */}
+          {/* Workflow Session & Checkpoint Controls - Compact header like agent view */}
           {workflowInfo && (
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-shrink-0">
-              {/* Checkpoint Selector - only show if checkpoints exist */}
-              {workflowInfo.supports_checkpointing && availableCheckpoints.length > 0 && (
-                <Select
-                  value={selectedCheckpointId || "__none__"}
-                  onValueChange={(value) => setSelectedCheckpointId(value === "__none__" ? null : value)}
-                  disabled={isStreaming}
-                >
-                  <SelectTrigger className="w-full sm:w-64">
-                    <SelectValue
-                      placeholder={
-                        availableCheckpoints.length === 0
-                          ? "No Checkpoints"
-                          : "Select Checkpoint"
-                      }
-                    >
-                      {selectedCheckpointId ? (
-                        <div className="flex items-center gap-2 text-xs">
-                          <span>
-                            Checkpoint {selectedCheckpointId.slice(0, 8)}...
-                          </span>
-                          {availableCheckpoints.find(cp => cp.checkpoint_id === selectedCheckpointId) && (
-                            <>
-                              <span className="text-muted-foreground">•</span>
-                              <span className="text-muted-foreground">
-                                {new Date(
-                                  availableCheckpoints.find(cp => cp.checkpoint_id === selectedCheckpointId)!.timestamp * 1000
-                                ).toLocaleString()}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      ) : (
-                        availableCheckpoints.length === 0
-                          ? "No Checkpoints (Start Fresh)"
-                          : "Start Fresh (No Checkpoint)"
-                      )}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">
+              {/* Session Dropdown */}
+              <Select
+                value={currentSession?.conversation_id || ""}
+                onValueChange={handleSessionSelect}
+                disabled={loadingSessions}
+              >
+                <SelectTrigger className="w-full sm:w-64">
+                  <SelectValue
+                    placeholder={
+                      loadingSessions
+                        ? "Loading..."
+                        : availableSessions.length === 0
+                        ? "No conversations"
+                        : "Select conversation"
+                    }
+                  >
+                    {currentSession && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <span>{currentSession.metadata.name || `Conversation ${currentSession.conversation_id.slice(-8)}`}</span>
+                      </div>
+                    )}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {availableSessions.map((session) => (
+                    <SelectItem key={session.conversation_id} value={session.conversation_id}>
                       <div className="flex items-center justify-between w-full">
-                        <span>Start Fresh (No Checkpoint)</span>
+                        <span>{session.metadata.name || `Conversation ${session.conversation_id.slice(-8)}`}</span>
+                        {session.created_at && (
+                          <span className="text-xs text-muted-foreground ml-3">
+                            {new Date(session.created_at * 1000).toLocaleTimeString()}
+                          </span>
+                        )}
                       </div>
                     </SelectItem>
-                    {availableCheckpoints.map((cp) => (
-                      <SelectItem key={cp.checkpoint_id} value={cp.checkpoint_id}>
-                        <div className="flex items-center justify-between w-full">
-                          <span>Checkpoint {cp.checkpoint_id.slice(0, 8)}...</span>
-                          <span className="text-xs text-muted-foreground ml-3">
-                            {new Date(cp.timestamp * 1000).toLocaleString()}
-                          </span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+                  ))}
+                </SelectContent>
+              </Select>
 
+              {/* Delete Session Button */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleDeleteSession}
+                disabled={!currentSession || loadingSessions}
+                className="h-9 w-9 p-0"
+                title="Delete current session"
+              >
+                <Trash2 className="h-4 w-4 text-red-500" />
+              </Button>
+
+              {/* New Session Button */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleNewSession}
+                disabled={loadingSessions}
+                className="h-9 px-3"
+                title="New session"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+
+              {/* Checkpoint Dropdown */}
+              <CheckpointSelector
+                conversationId={currentSession?.conversation_id}
+                selectedCheckpoint={selectedCheckpointId || undefined}
+                onCheckpointSelect={(checkpointId) => setSelectedCheckpointId(checkpointId || null)}
+              />
+
+              {/* Run Button */}
               <RunWorkflowButton
                 inputSchema={workflowInfo.input_schema}
                 onRun={handleSendWorkflowData}
@@ -1111,22 +1297,84 @@ export function WorkflowView({
         {/* Right: Execution Timeline - inflates from left on first event */}
         {showTimeline && (
           <div
-            className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-out"
+            className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-out border-l"
             style={{
-              width: showTimeline ? '24rem' : '0',
+              width: timelineMinimized ? '2.5rem' : '24rem',
             }}
           >
-            <div className="w-96 h-full">
-              <ExecutionTimeline
-                events={workflowEvents}
-                itemOutputs={itemOutputs.current}
-                currentExecutorId={activeExecutors[activeExecutors.length - 1] || null}
-                isStreaming={isStreaming}
-                onExecutorClick={handleNodeSelect}
-                selectedExecutorId={selectedExecutorId}
-                workflowResult={workflowResult}
-              />
-            </div>
+            {timelineMinimized ? (
+              /* Minimized Timeline - Vertical Bar (fully clickable) */
+              <div
+                className="h-full w-10 bg-background flex flex-col items-center py-2 cursor-pointer hover:bg-accent/50 transition-colors"
+                onClick={() => setTimelineMinimized(false)}
+                title="Expand timeline"
+              >
+                {/* Expand button at top (visual affordance) */}
+                <div className="h-8 w-8 flex items-center justify-center">
+                  <ChevronLeft className="h-4 w-4 text-muted-foreground" />
+                </div>
+
+                {/* Text and count centered in middle */}
+                <div className="flex-1 flex flex-col items-center justify-center gap-2 pointer-events-none">
+                  <div
+                    className="text-xs text-muted-foreground select-none"
+                    style={{
+                      writingMode: 'vertical-rl',
+                      transform: 'rotate(180deg)'
+                    }}
+                  >
+                    Execution Timeline
+                  </div>
+                  {workflowEvents.length > 0 && (
+                    <div className={`bg-primary text-primary-foreground rounded-full w-5 h-5 flex items-center justify-center ${
+                      isStreaming ? 'animate-pulse' : ''
+                    }`}
+                    style={{ fontSize: '10px' }}>
+                      {workflowEvents.length}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* Expanded Timeline */
+              <div className="w-96 h-full flex flex-col">
+                {/* Timeline Header with Count Badge and Minimize Button */}
+                <div className="flex items-center justify-between p-2 border-b">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-medium">Execution Timeline</h3>
+                    {workflowEvents.length > 0 && (
+                      <div className={`bg-primary text-primary-foreground rounded-full px-2 h-5 flex items-center justify-center ${
+                        isStreaming ? 'animate-pulse' : ''
+                      }`}
+                      style={{ fontSize: '11px', minWidth: '20px' }}>
+                        {workflowEvents.length}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setTimelineMinimized(true)}
+                    className="h-8 w-8 p-0"
+                    title="Minimize timeline"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+                {/* Timeline Content - No duplicate header */}
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <ExecutionTimeline
+                    events={workflowEvents}
+                    itemOutputs={itemOutputs.current}
+                    currentExecutorId={activeExecutors[activeExecutors.length - 1] || null}
+                    isStreaming={isStreaming}
+                    onExecutorClick={handleNodeSelect}
+                    selectedExecutorId={selectedExecutorId}
+                    workflowResult={workflowResult}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

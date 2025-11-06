@@ -27,7 +27,7 @@ from openai.types.responses import (
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
 from openai.types.shared import Metadata, ResponsesModel
 
-from ._discovery_models import DiscoveryResponse, EntityInfo
+from ._discovery_models import Deployment, DeploymentConfig, DeploymentEvent, DiscoveryResponse, EntityInfo
 from ._openai_custom import (
     AgentFrameworkRequest,
     CustomResponseOutputItemAddedEvent,
@@ -55,6 +55,9 @@ __all__ = [
     "ConversationItem",
     "CustomResponseOutputItemAddedEvent",
     "CustomResponseOutputItemDoneEvent",
+    "Deployment",
+    "DeploymentConfig",
+    "DeploymentEvent",
     "DiscoveryResponse",
     "EntityInfo",
     "ExecutorActionItem",

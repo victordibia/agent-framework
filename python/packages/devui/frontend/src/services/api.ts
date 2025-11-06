@@ -27,6 +27,9 @@ interface BackendEntityInfo {
   tools?: (string | Record<string, unknown>)[];
   metadata: Record<string, unknown>;
   source?: string;
+  // Deployment support
+  deployment_supported?: boolean;
+  deployment_reason?: string;
   // Agent-specific fields (present when type === "agent")
   instructions?: string;
   model?: string;
@@ -128,17 +131,14 @@ class ApiClient {
   }> {
     const response = await this.request<DiscoveryResponse>("/v1/entities");
 
-    // Separate agents and workflows
-    const agents: AgentInfo[] = [];
-    const workflows: WorkflowInfo[] = [];
-
-    response.entities.forEach((entity) => {
+    // Transform entities while preserving backend order
+    const entities: (AgentInfo | WorkflowInfo)[] = response.entities.map((entity) => {
       if (entity.type === "agent") {
-        agents.push({
+        return {
           id: entity.id,
           name: entity.name,
           description: entity.description,
-          type: "agent",
+          type: "agent" as const,
           source: (entity.source as AgentSource) || "directory",
           tools: (entity.tools || []).map((tool) =>
             typeof tool === "string" ? tool : JSON.stringify(tool)
@@ -149,22 +149,26 @@ class ApiClient {
               ? entity.metadata.module_path
               : undefined,
           metadata: entity.metadata, // Preserve metadata including lazy_loaded flag
+          // Deployment support
+          deployment_supported: entity.deployment_supported,
+          deployment_reason: entity.deployment_reason,
           // Agent-specific fields
           instructions: entity.instructions,
           model: entity.model,
           chat_client_type: entity.chat_client_type,
           context_providers: entity.context_providers,
           middleware: entity.middleware,
-        });
-      } else if (entity.type === "workflow") {
+        };
+      } else {
+        // Workflow
         const firstTool = entity.tools?.[0];
         const startExecutorId = typeof firstTool === "string" ? firstTool : "";
 
-        workflows.push({
+        return {
           id: entity.id,
           name: entity.name,
           description: entity.description,
-          type: "workflow",
+          type: "workflow" as const,
           source: (entity.source as AgentSource) || "directory",
           executors: (entity.tools || []).map((tool) =>
             typeof tool === "string" ? tool : JSON.stringify(tool)
@@ -175,17 +179,24 @@ class ApiClient {
               ? entity.metadata.module_path
               : undefined,
           metadata: entity.metadata, // Preserve metadata including lazy_loaded flag
+          // Deployment support
+          deployment_supported: entity.deployment_supported,
+          deployment_reason: entity.deployment_reason,
           input_schema:
             (entity.input_schema as unknown as import("@/types").JSONSchema) || {
               type: "string",
             }, // Default schema
           input_type_name: entity.input_type_name || "Input",
           start_executor_id: startExecutorId,
-        });
+        };
       }
     });
 
-    return { entities: [...agents, ...workflows], agents, workflows };
+    // Create filtered arrays for backward compatibility
+    const agents = entities.filter((e): e is AgentInfo => e.type === "agent");
+    const workflows = entities.filter((e): e is WorkflowInfo => e.type === "workflow");
+
+    return { entities, agents, workflows };
   }
 
   // Legacy methods for compatibility
@@ -322,6 +333,19 @@ class ApiClient {
     }`;
 
     return this.request<{ data: unknown[]; has_more: boolean }>(url);
+  }
+
+  async deleteConversationItem(
+    conversationId: string,
+    itemId: string
+  ): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/v1/conversations/${conversationId}/items/${itemId}`,
+      { method: "DELETE" }
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to delete item: ${response.statusText}`);
+    }
   }
 
   // OpenAI-compatible streaming methods using /v1/responses endpoint
@@ -568,6 +592,139 @@ class ApiClient {
       body: JSON.stringify(request),
     });
   }
+
+  // Deployment methods
+  async* streamDeployment(config: {
+    entity_id: string;
+    resource_group: string;
+    app_name: string;
+    region?: string;
+    ui_mode?: string;
+  }): AsyncGenerator<{
+    type: string;
+    message: string;
+    url?: string;
+    auth_token?: string;
+  }> {
+    const response = await fetch(`${this.baseUrl}/v1/deployments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ...config, stream: true }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Deployment failed: ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") return;
+            try {
+              yield JSON.parse(data);
+            } catch (e) {
+              // Emit error event for parsing failures
+              yield {
+                type: "deploy.error",
+                message: `Failed to parse deployment event: ${e instanceof Error ? e.message : "Unknown error"}`,
+              };
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Emit error event before throwing
+      yield {
+        type: "deploy.failed",
+        message: `Stream interrupted: ${error instanceof Error ? error.message : "Unknown error"}`,
+      };
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  // ============================================================================
+  // Workflow Session Management (uses /conversations API)
+  // ============================================================================
+
+  async listWorkflowSessions(entityId: string): Promise<{ data: import("@/types").WorkflowSession[] }> {
+    // Workflow sessions are conversations with entity_id and type metadata
+    const url = `/v1/conversations?entity_id=${encodeURIComponent(entityId)}&type=workflow_session`;
+    const response = await this.request<{
+      object: "list";
+      data: ConversationApiResponse[];
+      has_more: boolean;
+    }>(url);
+
+    // Transform conversations to WorkflowSession format (no checkpoint counting)
+    const sessions = response.data.map((conv) => ({
+      conversation_id: conv.id,
+      entity_id: conv.metadata?.entity_id || entityId,
+      created_at: conv.created_at,
+      metadata: {
+        name: conv.metadata?.name || `Session ${new Date(conv.created_at * 1000).toLocaleString()}`,
+        description: conv.metadata?.description,
+        type: "workflow_session" as const,
+      },
+    }));
+
+    return { data: sessions };
+  }
+
+  async createWorkflowSession(
+    entityId: string,
+    params?: { name?: string; description?: string }
+  ): Promise<import("@/types").WorkflowSession> {
+    // Create conversation with workflow session metadata
+    const metadata = {
+      entity_id: entityId,
+      type: "workflow_session" as const,
+      name: params?.name || `Session ${new Date().toLocaleString()}`,
+      ...(params?.description && { description: params.description }),
+    };
+
+    const conversation = await this.createConversation(metadata);
+
+    return {
+      conversation_id: conversation.id,
+      entity_id: entityId,
+      created_at: conversation.created_at,
+      metadata: {
+        name: metadata.name,
+        description: metadata.description,
+        type: "workflow_session" as const,
+      },
+    };
+  }
+
+  async deleteWorkflowSession(_entityId: string, conversationId: string): Promise<void> {
+    // Delete conversation (this also deletes all associated items/checkpoints)
+    const success = await this.deleteConversation(conversationId);
+    if (!success) {
+      throw new Error("Failed to delete workflow session");
+    }
+  }
+
+  // Checkpoint operations now handled through standard conversation items API
+  // Checkpoints are conversation items with type="checkpoint"
 }
 
 // Export singleton instance

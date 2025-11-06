@@ -11,6 +11,9 @@ import {
   ChevronDown,
   ChevronRight,
   Music,
+  Check,
+  X,
+  Clock,
 } from "lucide-react";
 import type { MessageContent } from "@/types/openai";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
@@ -201,6 +204,84 @@ function DataContentRenderer({ content, className }: ContentRendererProps) {
   );
 }
 
+// Function approval request renderer
+function FunctionApprovalRequestRenderer({ content, className }: ContentRendererProps) {
+  if (content.type !== "function_approval_request") return null;
+
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { status, function_call } = content;
+
+  // Status styling
+  const statusConfig = {
+    pending: {
+      icon: Clock,
+      color: "amber",
+      label: "Awaiting Approval",
+      bgClass: "bg-amber-50 dark:bg-amber-950/20",
+      borderClass: "border-amber-200 dark:border-amber-800",
+      iconClass: "text-amber-600 dark:text-amber-400",
+      textClass: "text-amber-800 dark:text-amber-300",
+    },
+    approved: {
+      icon: Check,
+      color: "green",
+      label: "Approved",
+      bgClass: "bg-green-50 dark:bg-green-950/20",
+      borderClass: "border-green-200 dark:border-green-800",
+      iconClass: "text-green-600 dark:text-green-400",
+      textClass: "text-green-800 dark:text-green-300",
+    },
+    rejected: {
+      icon: X,
+      color: "red",
+      label: "Rejected",
+      bgClass: "bg-red-50 dark:bg-red-950/20",
+      borderClass: "border-red-200 dark:border-red-800",
+      iconClass: "text-red-600 dark:text-red-400",
+      textClass: "text-red-800 dark:text-red-300",
+    },
+  };
+
+  const config = statusConfig[status];
+  const StatusIcon = config.icon;
+
+  let parsedArgs;
+  try {
+    parsedArgs = typeof function_call.arguments === "string"
+      ? JSON.parse(function_call.arguments)
+      : function_call.arguments;
+  } catch {
+    parsedArgs = function_call.arguments;
+  }
+
+  return (
+    <div className={`my-2 p-3 border rounded ${config.bgClass} ${config.borderClass} ${className || ""}`}>
+      <div
+        className="flex items-center gap-2 cursor-pointer"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <StatusIcon className={`h-4 w-4 ${config.iconClass}`} />
+        <span className={`text-sm font-medium ${config.textClass}`}>
+          {config.label}: {function_call.name}
+        </span>
+        {isExpanded ? (
+          <ChevronDown className={`h-4 w-4 ${config.iconClass} ml-auto`} />
+        ) : (
+          <ChevronRight className={`h-4 w-4 ${config.iconClass} ml-auto`} />
+        )}
+      </div>
+      {isExpanded && (
+        <div className="mt-2 text-xs font-mono bg-white dark:bg-gray-900 p-2 rounded border">
+          <div className={`${config.textClass} mb-1`}>Arguments:</div>
+          <pre className="whitespace-pre-wrap">
+            {JSON.stringify(parsedArgs, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Main content renderer that delegates to specific renderers
 export function OpenAIContentRenderer({ content, className, isStreaming }: ContentRendererProps) {
   switch (content.type) {
@@ -214,6 +295,8 @@ export function OpenAIContentRenderer({ content, className, isStreaming }: Conte
       return <FileContentRenderer content={content} className={className} />;
     case "output_data":
       return <DataContentRenderer content={content} className={className} />;
+    case "function_approval_request":
+      return <FunctionApprovalRequestRenderer content={content} className={className} />;
     default:
       return null;
   }

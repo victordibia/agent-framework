@@ -62,6 +62,18 @@ Examples:
         help="UI interface mode - 'developer' shows debug tools, 'user' shows simplified interface",
     )
 
+    parser.add_argument(
+        "--auth",
+        action="store_true",
+        help="Enable authentication via Bearer token (required for deployed environments)",
+    )
+
+    parser.add_argument(
+        "--auth-token",
+        type=str,
+        help="Custom authentication token (auto-generated if not provided with --auth)",
+    )
+
     parser.add_argument("--version", action="version", version=f"Agent Framework DevUI {get_version()}")
 
     return parser
@@ -136,6 +148,8 @@ def main() -> None:
             ui_enabled=ui_enabled,
             tracing_enabled=args.tracing,
             ui_mode=args.mode,
+            auth_enabled=args.auth,
+            auth_token=args.auth_token,
         )
 
     except KeyboardInterrupt:
