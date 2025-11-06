@@ -57,6 +57,9 @@ class SpamDetectorResponse:
     is_spam: bool = False
     confidence_score: float = 0.0
     spam_reasons: list[str] | None = None
+    human_reviewed: bool = False
+    human_decision: str | None = None
+    ai_original_classification: bool = False
 
     def __post_init__(self):
         """Initialize spam_reasons list if None."""
@@ -85,6 +88,9 @@ class ProcessingResult:
     is_spam: bool
     confidence_score: float
     spam_reasons: list[str]
+    was_human_reviewed: bool = False
+    human_override: str | None = None
+    ai_original_decision: bool = False
 
 
 class EmailRequest(BaseModel):
@@ -188,6 +194,7 @@ class SpamDetector(Executor):
             "word_count": email_content.word_count,
             "has_suspicious_patterns": email_content.has_suspicious_patterns,
             "is_spam": is_spam,
+            "ai_original_classification": is_spam,  # Store original AI decision
             "confidence_score": spam_score,
             "spam_reasons": spam_reasons
         })
@@ -218,18 +225,21 @@ class SpamDetector(Executor):
         # Get stored detection result
         state = await ctx.get_executor_state() or {}
         print(f"[SpamDetector] Retrieved state: {state}")
-        is_spam = state.get("is_spam", False)
+        ai_original = state.get("ai_original_classification", False)
         confidence_score = state.get("confidence_score", 0.0)
         spam_reasons = state.get("spam_reasons", [])
 
         # Parse human decision from the response model
         human_decision = response.decision.strip().lower()
 
-        # Override spam detection if human disagrees
-        if human_decision in ["approve", "not spam", "legitimate", "no"]:
+        # Determine final classification based on human input
+        if human_decision in ["not spam"]:
             is_spam = False
-        elif human_decision in ["reject", "spam", "yes"]:
+        elif human_decision in ["spam"]:
             is_spam = True
+        else:
+            # Default to AI decision if unclear
+            is_spam = ai_original
 
         # Reconstruct EmailContent from stored primitives
         email_content = EmailContent(
@@ -243,10 +253,13 @@ class SpamDetector(Executor):
             email_content=email_content,
             is_spam=is_spam,
             confidence_score=confidence_score,
-            spam_reasons=spam_reasons
+            spam_reasons=spam_reasons,
+            human_reviewed=True,
+            human_decision=response.decision,
+            ai_original_classification=ai_original
         )
 
-        print(f"[SpamDetector] Sending SpamDetectorResponse: is_spam={is_spam}, confidence={confidence_score}")
+        print(f"[SpamDetector] Sending SpamDetectorResponse: is_spam={is_spam}, confidence={confidence_score}, human_reviewed=True")
         await ctx.send_message(result)
         print(f"[SpamDetector] Message sent successfully")
 
@@ -274,13 +287,16 @@ class SpamHandler(Executor):
             is_spam=spam_result.is_spam,
             confidence_score=spam_result.confidence_score,
             spam_reasons=spam_result.spam_reasons or [],
+            was_human_reviewed=spam_result.human_reviewed,
+            human_override=spam_result.human_decision,
+            ai_original_decision=spam_result.ai_original_classification,
         )
 
         await ctx.send_message(result)
 
 
-class MessageResponder(Executor):
-    """Step 3b: An executor that responds to legitimate messages."""
+class LegitimateMessageHandler(Executor):
+    """Step 3b: An executor that handles legitimate (non-spam) messages."""
 
     @handler
     async def handle_spam_detection(
@@ -296,12 +312,15 @@ class MessageResponder(Executor):
 
         result = ProcessingResult(
             original_message=spam_result.email_content.original_message,
-            action_taken="responded_and_filed",
+            action_taken="delivered_to_inbox",
             processing_time=2.5,
             status="message_processed",
             is_spam=spam_result.is_spam,
             confidence_score=spam_result.confidence_score,
             spam_reasons=spam_result.spam_reasons or [],
+            was_human_reviewed=spam_result.human_reviewed,
+            human_override=spam_result.human_decision,
+            ai_original_decision=spam_result.ai_original_classification,
         )
 
         await ctx.send_message(result)
@@ -321,17 +340,60 @@ class FinalProcessor(Executor):
 
         total_time = result.processing_time + 1.5
 
-        # Include classification details in completion message
+        # Build classification status with human review info
         classification = "SPAM" if result.is_spam else "LEGITIMATE"
-        reasons = ", ".join(result.spam_reasons) if result.spam_reasons else "none"
 
-        completion_message = (
-            f"Email classified as {classification} (confidence: {result.confidence_score:.2f}). "
-            f"Reasons: {reasons}. "
-            f"Action: {result.action_taken}, "
-            f"Status: {result.status}, "
-            f"Total time: {total_time:.1f}s"
-        )
+        # Add human review context
+        review_status = ""
+        if result.was_human_reviewed:
+            if result.ai_original_decision != result.is_spam:
+                review_status = " (human-overridden)"
+            else:
+                review_status = " (human-verified)"
+
+        # Build appropriate message based on classification
+        if result.is_spam:
+            # For spam messages
+            spam_indicators = ", ".join(result.spam_reasons) if result.spam_reasons else "none detected"
+
+            if result.was_human_reviewed:
+                ai_status = "SPAM" if result.ai_original_decision else "LEGITIMATE"
+                human_decision = result.human_override if result.human_override else "unknown"
+
+                completion_message = (
+                    f"Email classified as {classification}{review_status}.\n"
+                    f"AI detected: {ai_status} (confidence: {result.confidence_score:.2f})\n"
+                    f"Human reviewer: {human_decision}\n"
+                    f"Spam indicators: {spam_indicators}\n"
+                    f"Action: Message quarantined for review\n"
+                    f"Processing time: {total_time:.1f}s"
+                )
+            else:
+                completion_message = (
+                    f"Email classified as {classification} (confidence: {result.confidence_score:.2f}).\n"
+                    f"Spam indicators: {spam_indicators}\n"
+                    f"Action: Message quarantined for review\n"
+                    f"Processing time: {total_time:.1f}s"
+                )
+        else:
+            # For legitimate messages
+            if result.was_human_reviewed:
+                ai_status = "SPAM" if result.ai_original_decision else "LEGITIMATE"
+                human_decision = result.human_override if result.human_override else "unknown"
+
+                completion_message = (
+                    f"Email classified as {classification}{review_status}.\n"
+                    f"AI detected: {ai_status} (confidence: {result.confidence_score:.2f})\n"
+                    f"Human reviewer: {human_decision}\n"
+                    f"Action: Delivered to inbox\n"
+                    f"Processing time: {total_time:.1f}s"
+                )
+            else:
+                completion_message = (
+                    f"Email classified as {classification} (confidence: {result.confidence_score:.2f}).\n"
+                    f"Action: Delivered to inbox\n"
+                    f"Processing time: {total_time:.1f}s"
+                )
 
         await ctx.yield_output(completion_message)
 
@@ -346,7 +408,7 @@ spam_keywords = ["spam", "advertisement", "offer", "click here", "winner", "cong
 email_preprocessor = EmailPreprocessor(id="email_preprocessor")
 spam_detector = SpamDetector(spam_keywords, id="spam_detector")
 spam_handler = SpamHandler(id="spam_handler")
-message_responder = MessageResponder(id="message_responder")
+legitimate_message_handler = LegitimateMessageHandler(id="legitimate_message_handler")
 final_processor = FinalProcessor(id="final_processor")
 
 # Build the comprehensive 4-step workflow with branching logic and HIL support
@@ -365,11 +427,11 @@ workflow = (
         spam_detector,
         [
             Case(condition=lambda x: isinstance(x, SpamDetectorResponse) and x.is_spam, target=spam_handler),
-            Default(target=message_responder),  # Default handles non-spam and non-SpamDetectorResponse messages
+            Default(target=legitimate_message_handler),  # Default handles non-spam and non-SpamDetectorResponse messages
         ],
     )
     .add_edge(spam_handler, final_processor)
-    .add_edge(message_responder, final_processor)
+    .add_edge(legitimate_message_handler, final_processor)
     .build()
 )
 
