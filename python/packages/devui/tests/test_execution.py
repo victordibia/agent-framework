@@ -238,6 +238,29 @@ def test_executor_parse_raw_falls_back_to_string():
     assert parsed == "hi there"
 
 
+def test_executor_parse_stringified_json_workflow_input():
+    """Stringified JSON workflow input (from frontend JSON.stringify) is correctly parsed."""
+    from pydantic import BaseModel
+
+    class WorkflowInput(BaseModel):
+        input: str
+        metadata: dict | None = None
+
+    executor = AgentFrameworkExecutor(EntityDiscovery(None), MessageMapper())
+    start_executor = _DummyStartExecutor(handlers={WorkflowInput: lambda *_: None})
+    workflow = _DummyWorkflow(start_executor)
+
+    # Simulate frontend sending JSON.stringify({"input": "testing!", "metadata": {"key": "value"}})
+    stringified_json = '{"input": "testing!", "metadata": {"key": "value"}}'
+
+    parsed = executor._parse_raw_workflow_input(workflow, stringified_json)
+
+    # Should parse into WorkflowInput object
+    assert isinstance(parsed, WorkflowInput)
+    assert parsed.input == "testing!"
+    assert parsed.metadata == {"key": "value"}
+
+
 async def test_executor_handles_non_streaming_agent():
     """Test executor can handle agents with only run() method (no run_stream)."""
     from agent_framework import AgentRunResponse, AgentThread, ChatMessage, Role, TextContent
