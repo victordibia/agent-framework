@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class EnvVarRequirement(BaseModel):
@@ -76,6 +77,107 @@ class DeploymentConfig(BaseModel):
     ui_mode: str = Field(default="user", description="UI mode (user or developer)")
     ui_enabled: bool = Field(default=True, description="Whether to enable web interface")
     stream: bool = Field(default=True, description="Stream deployment events")
+
+    @field_validator("app_name")
+    @classmethod
+    def validate_app_name(cls, v: str) -> str:
+        """Validate Azure Container App name format.
+
+        Azure Container App names must:
+        - Be 3-32 characters long
+        - Contain only lowercase letters, numbers, and hyphens
+        - Start with a lowercase letter
+        - End with a lowercase letter or number
+        - Not contain consecutive hyphens
+        """
+        if not v:
+            raise ValueError("app_name cannot be empty")
+
+        if len(v) < 3 or len(v) > 32:
+            raise ValueError("app_name must be between 3 and 32 characters")
+
+        if not re.match(r"^[a-z][a-z0-9-]*[a-z0-9]$", v):
+            raise ValueError(
+                "app_name must start with a lowercase letter, "
+                "end with a letter or number, and contain only lowercase letters, numbers, and hyphens"
+            )
+
+        if "--" in v:
+            raise ValueError("app_name cannot contain consecutive hyphens")
+
+        return v
+
+    @field_validator("resource_group")
+    @classmethod
+    def validate_resource_group(cls, v: str) -> str:
+        """Validate Azure resource group name format.
+
+        Azure resource group names must:
+        - Be 1-90 characters long
+        - Contain only alphanumeric, underscore, parentheses, hyphen, period (except at end)
+        - Not end with a period
+        """
+        if not v:
+            raise ValueError("resource_group cannot be empty")
+
+        if len(v) > 90:
+            raise ValueError("resource_group must be 90 characters or less")
+
+        if not re.match(r"^[a-zA-Z0-9._()-]+$", v):
+            raise ValueError(
+                "resource_group can only contain alphanumeric characters, "
+                "underscores, hyphens, periods, and parentheses"
+            )
+
+        if v.endswith("."):
+            raise ValueError("resource_group cannot end with a period")
+
+        return v
+
+    @field_validator("region")
+    @classmethod
+    def validate_region(cls, v: str) -> str:
+        """Validate Azure region format.
+
+        Validates that the region string is a reasonable format.
+        Does not validate against the full list of Azure regions (which changes).
+        """
+        if not v:
+            raise ValueError("region cannot be empty")
+
+        if len(v) > 50:
+            raise ValueError("region name too long")
+
+        # Azure regions are typically lowercase with no spaces (e.g., eastus, westeurope)
+        if not re.match(r"^[a-z0-9]+$", v):
+            raise ValueError("region must contain only lowercase letters and numbers (e.g., eastus, westeurope)")
+
+        return v
+
+    @field_validator("entity_id")
+    @classmethod
+    def validate_entity_id(cls, v: str) -> str:
+        """Validate entity_id format to prevent injection attacks."""
+        if not v:
+            raise ValueError("entity_id cannot be empty")
+
+        if len(v) > 256:
+            raise ValueError("entity_id too long")
+
+        # Allow alphanumeric, hyphens, underscores, and periods
+        if not re.match(r"^[a-zA-Z0-9._-]+$", v):
+            raise ValueError("entity_id contains invalid characters")
+
+        return v
+
+    @field_validator("ui_mode")
+    @classmethod
+    def validate_ui_mode(cls, v: str) -> str:
+        """Validate ui_mode is one of the allowed values."""
+        if v not in ("user", "developer"):
+            raise ValueError("ui_mode must be 'user' or 'developer'")
+
+        return v
 
 
 class DeploymentEvent(BaseModel):

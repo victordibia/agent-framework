@@ -244,12 +244,8 @@ RUN pip install -r requirements.txt
         dockerfile_content = f"""FROM python:3.11-slim
 WORKDIR /app
 
-{requirements_section}# Install git for cloning repositories
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-
-# Install DevUI from victordibia's fork, devui_oai_responses branch
-# This branch has the latest DevUI features including --auth and --ui-mode flags
-RUN pip install git+https://github.com/victordibia/agent-framework.git@devui_oai_responses#subdirectory=python/packages/devui
+{requirements_section}# Install DevUI from PyPI
+RUN pip install agent-framework-devui --pre
 
 # Copy entity code
 COPY . /app/entity/
@@ -350,7 +346,6 @@ CMD ["devui", "/app/entity", "--mode", "{config.ui_mode}", "--host", "0.0.0.0", 
                 str(entity_path),
                 "--env-vars",
                 f"DEVUI_AUTH_TOKEN={auth_token}",
-                "AUTH_REQUIRED=true",
                 "--ingress",
                 "external",
                 "--target-port",
@@ -377,7 +372,6 @@ CMD ["devui", "/app/entity", "--mode", "{config.ui_mode}", "--host", "0.0.0.0", 
                 str(entity_path),
                 "--env-vars",
                 f"DEVUI_AUTH_TOKEN={auth_token}",
-                "AUTH_REQUIRED=true",
                 "--ingress",
                 "external",
                 "--target-port",

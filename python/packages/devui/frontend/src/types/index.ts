@@ -161,6 +161,7 @@ export interface MetaResponse {
     tracing: boolean;
     openai_proxy: boolean;
   };
+  auth_required: boolean;
 }
 
 // Chat message types matching Agent Framework

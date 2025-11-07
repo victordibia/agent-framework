@@ -85,10 +85,20 @@ class AgentFrameworkExecutor:
         # Configure Agent Framework tracing only if ENABLE_OTEL is set
         if os.environ.get("ENABLE_OTEL"):
             try:
-                from agent_framework.observability import setup_observability
+                from agent_framework.observability import OBSERVABILITY_SETTINGS, setup_observability
 
-                setup_observability(enable_sensitive_data=True)
-                logger.info("Enabled Agent Framework observability")
+                # Only configure if not already executed
+                if not OBSERVABILITY_SETTINGS._executed_setup:
+                    # Get OTLP endpoint from either custom or standard env var
+                    # This handles the case where env vars are set after ObservabilitySettings was imported
+                    otlp_endpoint = os.environ.get("OTLP_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+
+                    # Pass the endpoint explicitly to setup_observability
+                    # This ensures OTLP exporters are created even if env vars were set late
+                    setup_observability(enable_sensitive_data=True, otlp_endpoint=otlp_endpoint)
+                    logger.info("Enabled Agent Framework observability")
+                else:
+                    logger.debug("Agent Framework observability already configured")
             except Exception as e:
                 logger.warning(f"Failed to enable Agent Framework observability: {e}")
         else:
@@ -336,6 +346,21 @@ class AgentFrameworkExecutor:
                     },
                     conversation_id=conversation_id,
                 )
+            else:
+                # Validate conversation exists, create if missing (handles deleted conversations)
+                import time
+
+                existing = self.conversation_store.get_conversation(conversation_id)
+                if not existing:
+                    logger.warning(f"Conversation {conversation_id} not found (may have been deleted), recreating")
+                    self.conversation_store.create_conversation(
+                        metadata={
+                            "entity_id": entity_id,
+                            "type": "workflow_session",
+                            "created_at": str(int(time.time())),
+                        },
+                        conversation_id=conversation_id,
+                    )
 
             # Get session-scoped checkpoint storage (InMemoryCheckpointStorage from conv_data)
             # Each conversation has its own storage instance, providing automatic session isolation.

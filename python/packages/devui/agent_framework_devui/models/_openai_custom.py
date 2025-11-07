@@ -388,6 +388,9 @@ class MetaResponse(BaseModel):
     capabilities: dict[str, bool] = {}
     """Server capabilities (e.g., tracing, openai_proxy)."""
 
+    auth_required: bool = False
+    """Whether the server requires Bearer token authentication."""
+
 
 # Export all custom types
 __all__ = [

@@ -243,11 +243,11 @@ async def test_multiple_credential_attributes() -> None:
 
 def test_ui_mode_configuration():
     """Test UI mode configuration."""
-    dev_server = DevServer(ui_mode="developer")
-    assert dev_server.ui_mode == "developer"
+    dev_server = DevServer(mode="developer")
+    assert dev_server.mode == "developer"
 
-    user_server = DevServer(ui_mode="user")
-    assert user_server.ui_mode == "user"
+    user_server = DevServer(mode="user")
+    assert user_server.mode == "user"
 
 
 @pytest.mark.asyncio
@@ -256,8 +256,8 @@ async def test_api_restrictions_in_user_mode():
     from fastapi.testclient import TestClient
 
     # Create servers with different modes
-    dev_server = DevServer(ui_mode="developer")
-    user_server = DevServer(ui_mode="user")
+    dev_server = DevServer(mode="developer")
+    user_server = DevServer(mode="user")
 
     dev_app = dev_server.create_app()
     user_app = user_server.create_app()

@@ -42,7 +42,11 @@ export function DeploymentModal({
   agentName = "Agent",
   entity,
 }: DeploymentModalProps) {
-  const deploymentSupported = entity?.deployment_supported ?? false;
+  // Get the Azure deployment feature flag from store
+  const azureDeploymentEnabled = useDevUIStore((state) => state.azureDeploymentEnabled);
+
+  // Check if deployment is truly supported (both feature flag and backend support)
+  const deploymentSupported = azureDeploymentEnabled && (entity?.deployment_supported ?? false);
 
   // Context-aware tab ordering: Azure first if deployable, Docker first otherwise
   const [activeTab, setActiveTab] = useState<Tab>(
@@ -290,20 +294,22 @@ openai>=1.0.0
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
             )}
           </button>
-          <button
-            onClick={() => setActiveTab("azure")}
-            className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-              activeTab === "azure"
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Cloud className="h-4 w-4 mr-2 inline" />
-            Azure
-            {activeTab === "azure" && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-            )}
-          </button>
+          {deploymentSupported && (
+            <button
+              onClick={() => setActiveTab("azure")}
+              className={`px-4 py-2 text-sm font-medium transition-colors relative ${
+                activeTab === "azure"
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Cloud className="h-4 w-4 mr-2 inline" />
+              Azure
+              {activeTab === "azure" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+              )}
+            </button>
+          )}
         </div>
 
         {/* Tab Content */}

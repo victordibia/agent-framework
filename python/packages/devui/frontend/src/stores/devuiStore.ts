@@ -83,6 +83,7 @@ interface DevUIState {
     tracing: boolean;
     openai_proxy: boolean;
   };
+  authRequired: boolean;
 
   // Deployment Slice
   isDeploying: boolean;
@@ -91,6 +92,7 @@ interface DevUIState {
     url: string;
     authToken: string;
   } | null;
+  azureDeploymentEnabled: boolean; // Feature flag for Azure deployment
 }
 
 // ========================================
@@ -159,7 +161,7 @@ interface DevUIActions {
   toggleOAIMode: () => void;
 
   // Server Meta Actions
-  setServerMeta: (meta: { uiMode: "developer" | "user"; capabilities: { tracing: boolean; openai_proxy: boolean } }) => void;
+  setServerMeta: (meta: { uiMode: "developer" | "user"; capabilities: { tracing: boolean; openai_proxy: boolean }; authRequired: boolean }) => void;
 
   // Deployment Actions
   startDeployment: () => void;
@@ -167,6 +169,7 @@ interface DevUIActions {
   setDeploymentResult: (result: { url: string; authToken: string }) => void;
   stopDeployment: () => void;
   clearDeploymentState: () => void;
+  setAzureDeploymentEnabled: (enabled: boolean) => void;
 
   // Combined Actions (handle multiple state updates + side effects)
   selectEntity: (entity: AgentInfo | WorkflowInfo) => void;
@@ -241,11 +244,13 @@ export const useDevUIStore = create<DevUIStore>()(
           tracing: false,
           openai_proxy: false,
         },
+        authRequired: false,
 
         // Deployment State
         isDeploying: false,
         deploymentLogs: [],
         lastDeployment: null,
+        azureDeploymentEnabled: false, // Default to disabled for safety
 
         // ========================================
         // Entity Actions
@@ -501,6 +506,7 @@ export const useDevUIStore = create<DevUIStore>()(
           set({
             uiMode: meta.uiMode,
             serverCapabilities: meta.capabilities,
+            authRequired: meta.authRequired,
           }),
 
         // ========================================
@@ -536,6 +542,9 @@ export const useDevUIStore = create<DevUIStore>()(
             deploymentLogs: [],
             lastDeployment: null,
           }),
+
+        setAzureDeploymentEnabled: (enabled) =>
+          set({ azureDeploymentEnabled: enabled }),
 
         // ========================================
         // Combined Actions
@@ -584,6 +593,7 @@ export const useDevUIStore = create<DevUIStore>()(
           debugPanelMinimized: state.debugPanelMinimized,
           debugPanelWidth: state.debugPanelWidth,
           oaiMode: state.oaiMode, // Persist OpenAI proxy mode settings
+          azureDeploymentEnabled: state.azureDeploymentEnabled, // Persist Azure deployment preference
         }),
       }
     ),

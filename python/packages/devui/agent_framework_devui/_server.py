@@ -40,7 +40,7 @@ class DevServer:
         host: str = "127.0.0.1",
         cors_origins: list[str] | None = None,
         ui_enabled: bool = True,
-        ui_mode: str = "developer",
+        mode: str = "developer",
     ) -> None:
         """Initialize the development server.
 
@@ -50,19 +50,55 @@ class DevServer:
             host: Host to bind server to
             cors_origins: List of allowed CORS origins
             ui_enabled: Whether to enable the UI
-            ui_mode: UI interface mode - 'developer' or 'user'
+            mode: Server mode - 'developer' (full access, verbose errors) or 'user' (restricted APIs, generic errors)
         """
         self.entities_dir = entities_dir
         self.port = port
         self.host = host
-        self.cors_origins = cors_origins or ["*"]
+
+        # Smart CORS defaults: permissive for localhost, restrictive for network-exposed deployments
+        if cors_origins is None:
+            # Localhost development: allow cross-origin for dev tools (e.g., frontend dev server)
+            # Network-exposed: empty list (same-origin only, no CORS)
+            cors_origins = ["*"] if host in ("127.0.0.1", "localhost") else []
+
+        self.cors_origins = cors_origins
         self.ui_enabled = ui_enabled
-        self.ui_mode = ui_mode
+        self.mode = mode
         self.executor: AgentFrameworkExecutor | None = None
         self.openai_executor: OpenAIExecutor | None = None
         self.deployment_manager = DeploymentManager()
         self._app: FastAPI | None = None
         self._pending_entities: list[Any] | None = None
+
+    def _is_dev_mode(self) -> bool:
+        """Check if running in developer mode.
+
+        Returns:
+            True if in developer mode, False if in user mode
+        """
+        return self.mode == "developer"
+
+    def _format_error(self, error: Exception, context: str = "Operation") -> str:
+        """Format error message based on server mode.
+
+        In developer mode: Returns detailed error message for debugging.
+        In user mode: Returns generic message and logs details internally.
+
+        Args:
+            error: The exception that occurred
+            context: Description of the operation that failed (e.g., "Request execution")
+
+        Returns:
+            Formatted error message appropriate for the current mode
+        """
+        if self._is_dev_mode():
+            # Developer mode: Show full error details for debugging
+            return f"{context} failed: {error!s}"
+
+        # User mode: Generic message to user, detailed logging internally
+        logger.error(f"{context} failed: {error}", exc_info=True)
+        return f"{context} failed"
 
     def _require_developer_mode(self, feature: str = "operation") -> None:
         """Check if current mode allows developer operations.
@@ -73,7 +109,7 @@ class DevServer:
         Raises:
             HTTPException: If in user mode
         """
-        if self.ui_mode == "user":
+        if self.mode == "user":
             logger.warning(f"Blocked {feature} access in user mode")
             raise HTTPException(
                 status_code=403,
@@ -82,7 +118,7 @@ class DevServer:
                         "message": f"Access denied: {feature} requires developer mode",
                         "type": "permission_denied",
                         "code": "developer_mode_required",
-                        "current_mode": self.ui_mode,
+                        "current_mode": self.mode,
                     }
                 },
             )
@@ -262,31 +298,39 @@ class DevServer:
         )
 
         # Add CORS middleware
+        # Note: allow_credentials cannot be True when allow_origins is ["*"]
+        # For localhost dev with wildcard origins, credentials are disabled
+        # For network deployments with specific origins or empty list, credentials can be enabled
+        allow_credentials = self.cors_origins != ["*"]
+
         app.add_middleware(
             CORSMiddleware,
             allow_origins=self.cors_origins,
-            allow_credentials=True,
+            allow_credentials=allow_credentials,
             allow_methods=["*"],
             allow_headers=["*"],
         )
 
         # Add authentication middleware using decorator pattern
-        auth_required = os.getenv("AUTH_REQUIRED", "false").lower() == "true"
+        # Auth is enabled by presence of DEVUI_AUTH_TOKEN
         auth_token = os.getenv("DEVUI_AUTH_TOKEN", "")
+        auth_required = bool(auth_token)
 
         if auth_required:
             logger.info("Authentication middleware enabled")
-            if not auth_token:
-                logger.warning("Auth required but no token configured - all requests will be rejected")
 
             @app.middleware("http")
             async def auth_middleware(request: Request, call_next: Callable[[Request], Awaitable[Any]]) -> Any:
                 """Validate Bearer token authentication.
 
-                Skips authentication for health and static UI endpoints.
+                Skips authentication for health, meta, static UI endpoints, and OPTIONS requests.
                 """
-                # Skip auth for health checks and static files
-                if request.url.path in ["/health", "/"] or request.url.path.startswith("/assets"):
+                # Skip auth for OPTIONS (CORS preflight) requests
+                if request.method == "OPTIONS":
+                    return await call_next(request)
+
+                # Skip auth for health checks, meta endpoint, and static files
+                if request.url.path in ["/health", "/meta", "/"] or request.url.path.startswith("/assets"):
                     return await call_next(request)
 
                 # Check Authorization header
@@ -350,7 +394,7 @@ class DevServer:
             openai_executor = await self._ensure_openai_executor()
 
             return MetaResponse(
-                ui_mode=self.ui_mode,  # type: ignore[arg-type]
+                ui_mode=self.mode,  # type: ignore[arg-type]
                 version=__version__,
                 framework="agent_framework",
                 capabilities={
@@ -358,6 +402,7 @@ class DevServer:
                     "openai_proxy": openai_executor.is_configured,
                     "deployment": True,  # Deployment feature is available
                 },
+                auth_required=bool(os.getenv("DEVUI_AUTH_TOKEN")),
             )
 
         @app.get("/v1/entities", response_model=DiscoveryResponse)
@@ -483,9 +528,13 @@ class DevServer:
 
             except HTTPException:
                 raise
+            except ValueError as e:
+                # ValueError from load_entity indicates entity not found or invalid
+                error_msg = self._format_error(e, "Entity loading")
+                raise HTTPException(status_code=404, detail=error_msg) from e
             except Exception as e:
-                logger.error(f"Error getting entity info for {entity_id}: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to get entity info: {e!s}") from e
+                error_msg = self._format_error(e, "Entity info retrieval")
+                raise HTTPException(status_code=500, detail=error_msg) from e
 
         @app.post("/v1/entities/{entity_id}/reload")
         async def reload_entity(entity_id: str) -> dict[str, Any]:
@@ -565,8 +614,8 @@ class DevServer:
             except HTTPException:
                 raise
             except Exception as e:
-                logger.error(f"Error creating deployment: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to create deployment: {e!s}") from e
+                error_msg = self._format_error(e, "Deployment creation")
+                raise HTTPException(status_code=500, detail=error_msg) from e
 
         @app.get("/v1/deployments")
         async def list_deployments(entity_id: str | None = None) -> list[Deployment]:
@@ -575,8 +624,8 @@ class DevServer:
             try:
                 return await self.deployment_manager.list_deployments(entity_id)
             except Exception as e:
-                logger.error(f"Error listing deployments: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to list deployments: {e!s}") from e
+                error_msg = self._format_error(e, "Deployment listing")
+                raise HTTPException(status_code=500, detail=error_msg) from e
 
         @app.get("/v1/deployments/{deployment_id}")
         async def get_deployment(deployment_id: str) -> Deployment:
@@ -686,8 +735,8 @@ class DevServer:
                 return await executor.execute_sync(request)
 
             except Exception as e:
-                logger.error(f"Error executing request: {e}")
-                error = OpenAIError.create(f"Execution failed: {e!s}")
+                error_msg = self._format_error(e, "Request execution")
+                error = OpenAIError.create(error_msg)
                 return JSONResponse(status_code=500, content=error.to_dict())
 
         # ========================================

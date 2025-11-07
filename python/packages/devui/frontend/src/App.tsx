@@ -3,28 +3,36 @@
  * Features: Entity selection, layout management, debug coordination
  */
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import { AppHeader, DebugPanel, SettingsModal, DeploymentModal } from "@/components/layout";
 import { GalleryView } from "@/components/features/gallery";
 import { AgentView } from "@/components/features/agent";
 import { WorkflowView } from "@/components/features/workflow";
 import { Toast, ToastContainer } from "@/components/ui/toast";
 import { apiClient } from "@/services/api";
-import { PanelRightOpen, ChevronLeft, ChevronDown, ServerOff, Rocket } from "lucide-react";
+import { PanelRightOpen, ChevronLeft, ChevronDown, ServerOff, Rocket, Lock } from "lucide-react";
 import type {
   AgentInfo,
   WorkflowInfo,
   ExtendedResponseStreamEvent,
 } from "@/types";
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
 import { useDevUIStore } from "@/stores";
 
 export default function App() {
+  // Local state for auth handling
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authToken, setAuthToken] = useState("");
+  const [isTestingToken, setIsTestingToken] = useState(false);
+  const [authError, setAuthError] = useState("");
+
   // Entity state from Zustand
   const agents = useDevUIStore((state) => state.agents);
   const workflows = useDevUIStore((state) => state.workflows);
   const entities = useDevUIStore((state) => state.entities);
   const selectedAgent = useDevUIStore((state) => state.selectedAgent);
+  const azureDeploymentEnabled = useDevUIStore((state) => state.azureDeploymentEnabled);
   const isLoadingEntities = useDevUIStore((state) => state.isLoadingEntities);
   const entityError = useDevUIStore((state) => state.entityError);
 
@@ -79,11 +87,25 @@ export default function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        // Fetch server metadata first (ui_mode, capabilities)
+        // Fetch server metadata first (ui_mode, capabilities, auth status)
         const meta = await apiClient.getMeta();
+
+        // Check if auth is required
+        if (meta.auth_required) {
+          setAuthRequired(true);
+
+          // If we don't have a token, stop here and show auth UI
+          if (!apiClient.getAuthToken()) {
+            setEntityError("UNAUTHORIZED");
+            setIsLoadingEntities(false);
+            return;
+          }
+        }
+
         useDevUIStore.getState().setServerMeta({
           uiMode: meta.ui_mode,
           capabilities: meta.capabilities,
+          authRequired: meta.auth_required,
         });
 
         // Single API call instead of two parallel calls to same endpoint
@@ -157,15 +179,50 @@ export default function App() {
         setIsLoadingEntities(false);
       } catch (error) {
         console.error("Failed to load agents/workflows:", error);
-        setEntityError(
-          error instanceof Error ? error.message : "Failed to load data"
-        );
+        const errorMessage = error instanceof Error ? error.message : "Failed to load data";
+
+        // Check if this is an auth error
+        if (errorMessage === "UNAUTHORIZED") {
+          setAuthRequired(true);
+        }
+
+        setEntityError(errorMessage);
         setIsLoadingEntities(false);
       }
     };
 
     loadData();
   }, [setAgents, setWorkflows, selectEntity, updateAgent, updateWorkflow, setIsLoadingEntities, setEntityError, setShowEntityNotFoundToast]);
+
+  // Handle auth token submission
+  const handleAuthTokenSubmit = useCallback(async () => {
+    if (!authToken.trim()) return;
+
+    setIsTestingToken(true);
+    setAuthError("");
+
+    try {
+      // Set token in API client (stores in localStorage)
+      apiClient.setAuthToken(authToken.trim());
+
+      // Test the token with an actual PROTECTED endpoint (not /meta which is public)
+      await apiClient.getEntities();
+
+      // If successful, reload to initialize with new token
+      window.location.reload();
+    } catch (error) {
+      // Token is invalid - clear it and show error
+      apiClient.clearAuthToken();
+      setIsTestingToken(false);
+
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      if (errorMsg === "UNAUTHORIZED") {
+        setAuthError("Invalid token. Please check and try again.");
+      } else {
+        setAuthError(`Failed to connect: ${errorMsg}`);
+      }
+    }
+  }, [authToken]);
 
   // Auto-switch from workflow to agent when OpenAI proxy mode is enabled
   useEffect(() => {
@@ -270,6 +327,7 @@ export default function App() {
   // Show error state if loading failed
   if (entityError) {
     const currentBackendUrl = apiClient.getBaseUrl();
+    const isAuthError = entityError === "UNAUTHORIZED" || authRequired;
 
     return (
       <div className="h-screen flex flex-col bg-background">
@@ -289,63 +347,124 @@ export default function App() {
             {/* Icon */}
             <div className="flex justify-center">
               <div className="rounded-full bg-muted p-4 animate-pulse">
-                <ServerOff className="h-12 w-12 text-muted-foreground" />
+                {isAuthError ? (
+                  <Lock className="h-12 w-12 text-muted-foreground" />
+                ) : (
+                  <ServerOff className="h-12 w-12 text-muted-foreground" />
+                )}
               </div>
             </div>
 
             {/* Heading */}
             <div className="space-y-2">
               <h2 className="text-2xl font-semibold text-foreground">
-                Can't Connect to Backend
+                {isAuthError ? "Authentication Required" : "Can't Connect to Backend"}
               </h2>
               <p className="text-muted-foreground text-base">
-                No worries! Just start the DevUI backend server and you'll be
-                good to go.
+                {isAuthError
+                  ? "This backend requires a bearer token to access."
+                  : "No worries! Just start the DevUI backend server and you'll be good to go."}
               </p>
             </div>
 
-            {/* Command Instructions */}
-            <div className="space-y-3">
-              <div className="text-left bg-muted/50 rounded-lg p-4 space-y-3">
-                <p className="text-sm font-medium text-foreground">
-                  Start the backend:
-                </p>
-                <code className="block bg-background px-3 py-2 rounded border text-sm font-mono text-foreground">
-                  devui ./agents --port 8080
-                </code>
-                <p className="text-xs text-muted-foreground">
-                  Or launch programmatically with{" "}
-                  <code className="text-xs">serve(entities=[agent])</code>
-                </p>
+            {/* Auth Input or Command Instructions */}
+            {isAuthError ? (
+              <div className="space-y-4">
+                <div className="text-left bg-muted/50 rounded-lg p-4 space-y-3">
+                  <p className="text-sm font-medium text-foreground">
+                    Enter Authentication Token
+                  </p>
+                  <Input
+                    type="password"
+                    placeholder="Paste token from server logs"
+                    value={authToken}
+                    onChange={(e) => setAuthToken(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !isTestingToken) {
+                        handleAuthTokenSubmit();
+                      }
+                    }}
+                    disabled={isTestingToken}
+                    className="font-mono text-sm"
+                  />
+                  <Button
+                    onClick={handleAuthTokenSubmit}
+                    disabled={!authToken.trim() || isTestingToken}
+                    className="w-full"
+                  >
+                    {isTestingToken ? "Verifying..." : "Connect"}
+                  </Button>
+
+                  {/* Error message */}
+                  {authError && (
+                    <p className="text-sm text-red-600 dark:text-red-400 text-center">
+                      {authError}
+                    </p>
+                  )}
+                </div>
+
+                <details className="text-left group">
+                  <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-2 justify-center">
+                    <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+                    Where do I find the token?
+                  </summary>
+                  <div className="mt-3 text-left bg-muted/30 rounded-lg p-3 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      Look for this in your DevUI server startup logs:
+                    </p>
+                    <code className="block bg-background px-2 py-1 rounded text-xs font-mono text-foreground">
+                      🔑 DEV TOKEN (localhost only, shown once):
+                      <br />
+                      &nbsp;&nbsp; abc123xyz...
+                    </code>
+                  </div>
+                </details>
               </div>
+            ) : (
+              <>
+                <div className="space-y-3">
+                  <div className="text-left bg-muted/50 rounded-lg p-4 space-y-3">
+                    <p className="text-sm font-medium text-foreground">
+                      Start the backend:
+                    </p>
+                    <code className="block bg-background px-3 py-2 rounded border text-sm font-mono text-foreground">
+                      devui ./agents --port 8080
+                    </code>
+                    <p className="text-xs text-muted-foreground">
+                      Or launch programmatically with{" "}
+                      <code className="text-xs">serve(entities=[agent])</code>
+                    </p>
+                  </div>
 
-              <p className="text-xs text-muted-foreground">
-                Default:{" "}
-                <span className="font-mono">{currentBackendUrl}</span>
-              </p>
-            </div>
+                  <p className="text-xs text-muted-foreground">
+                    Default:{" "}
+                    <span className="font-mono">{currentBackendUrl}</span>
+                  </p>
+                </div>
 
-            {/* Error Details (Collapsible) */}
-            {entityError && (
-              <details className="text-left group">
-                <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-2">
-                  <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
-                  Error details
-                </summary>
-                <p className="mt-2 text-xs text-muted-foreground font-mono bg-muted/30 p-3 rounded border">
-                  {entityError}
-                </p>
-              </details>
+                {/* Error Details (Collapsible) */}
+                {entityError && (
+                  <details className="text-left group">
+                    <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-2">
+                      <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+                      Error details
+                    </summary>
+                    <p className="mt-2 text-xs text-muted-foreground font-mono bg-muted/30 p-3 rounded border">
+                      {entityError}
+                    </p>
+                  </details>
+                )}
+
+                {/* Retry Button */}
+                <Button
+                  onClick={() => window.location.reload()}
+                  variant="default"
+                  className="mt-2"
+                >
+                  Retry Connection
+                </Button>
+              </>
             )}
-
-            {/* Retry Button */}
-            <Button
-              onClick={() => window.location.reload()}
-              variant="default"
-              className="mt-2"
-            >
-              Retry Connection
-            </Button>
           </div>
         </div>
 
@@ -481,7 +600,7 @@ export default function App() {
                         >
                           <Rocket className="h-3 w-3 mr-2 flex-shrink-0" />
                           <span className="truncate text-xs">
-                            {selectedAgent?.deployment_supported
+                            {azureDeploymentEnabled && selectedAgent?.deployment_supported
                               ? "Deploy to Azure"
                               : "Deployment Guide"}
                           </span>

@@ -49,7 +49,8 @@ import {
 
 type DebugEventHandler = (event: ExtendedResponseStreamEvent | "clear") => void;
 
-// Compact Checkpoint Selector Component
+// Compact Checkpoint Selector Component (currently unused - commented out in JSX)
+/*
 interface CheckpointSelectorProps {
   conversationId: string | undefined;
   selectedCheckpoint: string | undefined;
@@ -61,10 +62,12 @@ function CheckpointSelector({
   selectedCheckpoint,
   onCheckpointSelect,
 }: CheckpointSelectorProps) {
-  const [checkpoints, setCheckpoints] = useState<Array<{
-    checkpoint_id: string;
-    timestamp: number;
-  }>>([]);
+  const [checkpoints, setCheckpoints] = useState<
+    Array<{
+      checkpoint_id: string;
+      timestamp: number;
+    }>
+  >([]);
   const [loading, setLoading] = useState(false);
   const addToast = useDevUIStore((state) => state.addToast);
 
@@ -79,9 +82,11 @@ function CheckpointSelector({
       setLoading(true);
       try {
         // Fetch conversation items and filter for checkpoints
-        const response = await apiClient.listConversationItems(conversationId, { limit: 100 });
+        const response = await apiClient.listConversationItems(conversationId, {
+          limit: 100,
+        });
         const checkpointItems = response.data
-          .filter((item: any) => item.type === 'checkpoint')
+          .filter((item: any) => item.type === "checkpoint")
           .map((item: any) => ({
             checkpoint_id: item.checkpoint_id,
             timestamp: item.timestamp,
@@ -107,7 +112,9 @@ function CheckpointSelector({
       const itemId = `checkpoint_${checkpointId}`;
       await apiClient.deleteConversationItem(conversationId!, itemId);
       addToast({ message: "Checkpoint deleted", type: "success" });
-      setCheckpoints(prev => prev.filter(cp => cp.checkpoint_id !== checkpointId));
+      setCheckpoints((prev) =>
+        prev.filter((cp) => cp.checkpoint_id !== checkpointId)
+      );
       if (selectedCheckpoint === checkpointId) {
         onCheckpointSelect(undefined);
       }
@@ -124,7 +131,9 @@ function CheckpointSelector({
   return (
     <Select
       value={selectedCheckpoint || "none"}
-      onValueChange={(value) => onCheckpointSelect(value === "none" ? undefined : value)}
+      onValueChange={(value) =>
+        onCheckpointSelect(value === "none" ? undefined : value)
+      }
       disabled={loading}
     >
       <SelectTrigger className="w-[200px] h-9 text-xs">
@@ -133,7 +142,10 @@ function CheckpointSelector({
       <SelectContent>
         <SelectItem value="none">Start Fresh (No Checkpoint)</SelectItem>
         {checkpoints.map((cp) => (
-          <div key={cp.checkpoint_id} className="flex items-center justify-between group">
+          <div
+            key={cp.checkpoint_id}
+            className="flex items-center justify-between group"
+          >
             <SelectItem value={cp.checkpoint_id} className="flex-1">
               Checkpoint {new Date(cp.timestamp * 1000).toLocaleString()}
             </SelectItem>
@@ -150,6 +162,7 @@ function CheckpointSelector({
     </Select>
   );
 }
+*/
 
 // Smart Run Workflow Button Component
 interface RunWorkflowButtonProps {
@@ -374,11 +387,16 @@ export function WorkflowView({
 }: WorkflowViewProps) {
   const [workflowInfo, setWorkflowInfo] = useState<WorkflowInfo | null>(null);
   const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowLoadError, setWorkflowLoadError] = useState<string | null>(
+    null
+  );
   const [openAIEvents, setOpenAIEvents] = useState<
     ExtendedResponseStreamEvent[]
   >([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [selectedExecutorId, setSelectedExecutorId] = useState<string | null>(null);
+  const [selectedExecutorId, setSelectedExecutorId] = useState<string | null>(
+    null
+  );
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
@@ -408,14 +426,18 @@ export function WorkflowView({
   const availableSessions = useDevUIStore((state) => state.availableSessions);
   const loadingSessions = useDevUIStore((state) => state.loadingSessions);
   const setCurrentSession = useDevUIStore((state) => state.setCurrentSession);
-  const setAvailableSessions = useDevUIStore((state) => state.setAvailableSessions);
+  const setAvailableSessions = useDevUIStore(
+    (state) => state.setAvailableSessions
+  );
   const setLoadingSessions = useDevUIStore((state) => state.setLoadingSessions);
   const addSession = useDevUIStore((state) => state.addSession);
   const removeSession = useDevUIStore((state) => state.removeSession);
   const addToast = useDevUIStore((state) => state.addToast);
 
   // Selected checkpoint for resume (local state)
-  const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
+  const [selectedCheckpointId, setSelectedCheckpointId] = useState<
+    string | null
+  >(null);
 
   // View options state
   const [viewOptions, setViewOptions] = useState(() => {
@@ -475,7 +497,9 @@ export function WorkflowView({
       await apiClient.reloadEntity(selectedWorkflow.id);
 
       // Fetch updated workflow info
-      const updatedWorkflow = await apiClient.getWorkflowInfo(selectedWorkflow.id);
+      const updatedWorkflow = await apiClient.getWorkflowInfo(
+        selectedWorkflow.id
+      );
 
       // Update store with fresh metadata
       updateWorkflow(updatedWorkflow);
@@ -490,7 +514,8 @@ export function WorkflowView({
       });
     } catch (error) {
       // Show error toast
-      const errorMessage = error instanceof Error ? error.message : "Failed to reload entity";
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to reload entity";
       addToast({
         message: `Failed to reload: ${errorMessage}`,
         type: "error",
@@ -507,14 +532,19 @@ export function WorkflowView({
       if (selectedWorkflow.type !== "workflow") return;
 
       setWorkflowLoading(true);
+      setWorkflowLoadError(null);
       try {
         const info = await apiClient.getWorkflowInfo(selectedWorkflow.id);
         setWorkflowInfo(info);
+        setWorkflowLoadError(null);
 
         // Note: Checkpoints are now loaded per-session via WorkflowSessionManager
         // When user selects a session, checkpoints will be loaded for that session
       } catch (error) {
         setWorkflowInfo(null);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        setWorkflowLoadError(errorMessage);
         console.error("Error loading workflow info:", error);
       } finally {
         setWorkflowLoading(false);
@@ -527,6 +557,7 @@ export function WorkflowView({
     setSelectedExecutorId(null);
     setShowTimeline(false);
     setWorkflowResult("");
+    setWorkflowLoadError(null);
     itemOutputs.current = {};
     currentStreamingItemId.current = null;
     workflowMetadata.current = null;
@@ -545,9 +576,12 @@ export function WorkflowView({
 
         // If no sessions exist, auto-create one
         if (response.data.length === 0) {
-          const newSession = await apiClient.createWorkflowSession(workflowInfo.id, {
-            name: `Conversation ${new Date().toLocaleString()}`,
-          });
+          const newSession = await apiClient.createWorkflowSession(
+            workflowInfo.id,
+            {
+              name: `Conversation ${new Date().toLocaleString()}`,
+            }
+          );
           setAvailableSessions([newSession]);
           setCurrentSession(newSession);
         } else {
@@ -584,7 +618,9 @@ export function WorkflowView({
   // Handle session select from dropdown
   const handleSessionSelect = useCallback(
     async (sessionId: string) => {
-      const session = availableSessions.find(s => s.conversation_id === sessionId);
+      const session = availableSessions.find(
+        (s) => s.conversation_id === sessionId
+      );
       if (session) {
         setCurrentSession(session);
         await handleSessionChange(session);
@@ -598,9 +634,12 @@ export function WorkflowView({
     if (!workflowInfo) return;
 
     try {
-      const newSession = await apiClient.createWorkflowSession(workflowInfo.id, {
-        name: `Conversation ${new Date().toLocaleString()}`,
-      });
+      const newSession = await apiClient.createWorkflowSession(
+        workflowInfo.id,
+        {
+          name: `Conversation ${new Date().toLocaleString()}`,
+        }
+      );
       addSession(newSession);
       setCurrentSession(newSession);
       await handleSessionChange(newSession);
@@ -609,7 +648,13 @@ export function WorkflowView({
       console.error("Failed to create session:", error);
       addToast({ message: "Failed to create session", type: "error" });
     }
-  }, [workflowInfo, addSession, setCurrentSession, handleSessionChange, addToast]);
+  }, [
+    workflowInfo,
+    addSession,
+    setCurrentSession,
+    handleSessionChange,
+    addToast,
+  ]);
 
   // Handle session deletion
   const handleDeleteSession = useCallback(async () => {
@@ -618,7 +663,10 @@ export function WorkflowView({
     if (!confirm("Delete this session? All checkpoints will be lost.")) return;
 
     try {
-      await apiClient.deleteWorkflowSession(workflowInfo.id, currentSession.conversation_id);
+      await apiClient.deleteWorkflowSession(
+        workflowInfo.id,
+        currentSession.conversation_id
+      );
       removeSession(currentSession.conversation_id);
       addToast({ message: "Session deleted", type: "success" });
     } catch (error) {
@@ -746,8 +794,8 @@ export function WorkflowView({
       try {
         const request = {
           input_data: inputData,
-          conversation_id: currentSession?.conversation_id || undefined,  // Pass session conversation_id for checkpoint support
-          checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint if any
+          conversation_id: currentSession?.conversation_id || undefined, // Pass session conversation_id for checkpoint support
+          checkpoint_id: selectedCheckpointId || undefined, // Pass selected checkpoint if any
         };
 
         // Clear any previous streaming state before starting new workflow execution
@@ -775,10 +823,14 @@ export function WorkflowView({
             setOpenAIEvents((prev) => {
               // Generate unique timestamp for each event
               const baseTimestamp = Math.floor(Date.now() / 1000);
-              const lastTimestamp = prev.length > 0
-                ? (prev[prev.length - 1] as any)._uiTimestamp || 0
-                : 0;
-              const uniqueTimestamp = Math.max(baseTimestamp, lastTimestamp + 1);
+              const lastTimestamp =
+                prev.length > 0
+                  ? (prev[prev.length - 1] as any)._uiTimestamp || 0
+                  : 0;
+              const uniqueTimestamp = Math.max(
+                baseTimestamp,
+                lastTimestamp + 1
+              );
 
               return [
                 ...prev,
@@ -798,7 +850,12 @@ export function WorkflowView({
             const item = (openAIEvent as any).item;
 
             // Handle executor action items
-            if (item && item.type === "executor_action" && item.executor_id && item.id) {
+            if (
+              item &&
+              item.type === "executor_action" &&
+              item.executor_id &&
+              item.id
+            ) {
               // Track this item ID as the current streaming target
               currentStreamingItemId.current = item.id;
               // Initialize output for this specific item (not executor!)
@@ -808,7 +865,12 @@ export function WorkflowView({
             }
 
             // Handle message items from Magentic agents (Option A implementation)
-            if (item && item.type === "message" && item.metadata?.source === "magentic" && item.id) {
+            if (
+              item &&
+              item.type === "message" &&
+              item.metadata?.source === "magentic" &&
+              item.id
+            ) {
               // Track this message ID as the current streaming target for Magentic agents
               currentStreamingItemId.current = item.id;
               // Initialize output for this message
@@ -818,7 +880,12 @@ export function WorkflowView({
             }
 
             // Handle workflow output messages (from ctx.yield_output) - different from agent messages
-            if (item && item.type === "message" && !item.metadata?.source && item.content) {
+            if (
+              item &&
+              item.type === "message" &&
+              !item.metadata?.source &&
+              item.content
+            ) {
               // Extract text from message content
               for (const content of item.content) {
                 if (content.type === "output_text" && content.text) {
@@ -874,7 +941,9 @@ export function WorkflowView({
               data.executor_id
             ) {
               // Create synthetic item ID for fallback format (no real item.id available)
-              const syntheticItemId = `fallback_${data.executor_id}_${Date.now()}`;
+              const syntheticItemId = `fallback_${
+                data.executor_id
+              }_${Date.now()}`;
               currentStreamingItemId.current = syntheticItemId;
               // Initialize output for this item
               if (!itemOutputs.current[syntheticItemId]) {
@@ -925,27 +994,31 @@ export function WorkflowView({
               {
                 request_id: hilEvent.request_id,
                 request_data: hilEvent.request_data,
-                request_schema: hilEvent.request_schema as unknown as JSONSchemaProperty,
+                request_schema:
+                  hilEvent.request_schema as unknown as JSONSchemaProperty,
               },
             ]);
 
             // Initialize responses with default values from schema
             // For enum fields, set to first option; for other fields with defaults, use those
-            const schema = hilEvent.request_schema as unknown as JSONSchemaProperty;
+            const schema =
+              hilEvent.request_schema as unknown as JSONSchemaProperty;
             const defaultValues: Record<string, unknown> = {};
 
             if (schema.properties) {
-              Object.entries(schema.properties).forEach(([fieldName, fieldSchema]) => {
-                const field = fieldSchema as JSONSchemaProperty;
-                // Set default for enum fields to first option
-                if (field.enum && field.enum.length > 0) {
-                  defaultValues[fieldName] = field.enum[0];
+              Object.entries(schema.properties).forEach(
+                ([fieldName, fieldSchema]) => {
+                  const field = fieldSchema as JSONSchemaProperty;
+                  // Set default for enum fields to first option
+                  if (field.enum && field.enum.length > 0) {
+                    defaultValues[fieldName] = field.enum[0];
+                  }
+                  // Use explicit default value if provided
+                  else if (field.default !== undefined) {
+                    defaultValues[fieldName] = field.default;
+                  }
                 }
-                // Use explicit default value if provided
-                else if (field.default !== undefined) {
-                  defaultValues[fieldName] = field.default;
-                }
-              });
+              );
             }
 
             setHilResponses((prev) => ({
@@ -978,7 +1051,13 @@ export function WorkflowView({
         setIsStreaming(false);
       }
     },
-    [selectedWorkflow, onDebugEvent, workflowInfo, currentSession, selectedCheckpointId]
+    [
+      selectedWorkflow,
+      onDebugEvent,
+      workflowInfo,
+      currentSession,
+      selectedCheckpointId,
+    ]
   );
 
   // Handle HIL response submission
@@ -1003,7 +1082,7 @@ export function WorkflowView({
           },
         ] as any, // OpenAI Responses API format, cast to satisfy TypeScript
         conversation_id: currentSession?.conversation_id || undefined,
-        checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint
+        checkpoint_id: selectedCheckpointId || undefined, // Pass selected checkpoint
       };
 
       // Use OpenAI-compatible API streaming to continue workflow
@@ -1026,9 +1105,10 @@ export function WorkflowView({
           setOpenAIEvents((prev) => {
             // Generate unique timestamp for each event
             const baseTimestamp = Math.floor(Date.now() / 1000);
-            const lastTimestamp = prev.length > 0
-              ? (prev[prev.length - 1] as any)._uiTimestamp || 0
-              : 0;
+            const lastTimestamp =
+              prev.length > 0
+                ? (prev[prev.length - 1] as any)._uiTimestamp || 0
+                : 0;
             const uniqueTimestamp = Math.max(baseTimestamp, lastTimestamp + 1);
 
             return [
@@ -1049,7 +1129,12 @@ export function WorkflowView({
           const item = (openAIEvent as any).item;
 
           // Handle executor action items
-          if (item && item.type === "executor_action" && item.executor_id && item.id) {
+          if (
+            item &&
+            item.type === "executor_action" &&
+            item.executor_id &&
+            item.id
+          ) {
             currentStreamingItemId.current = item.id;
             if (!itemOutputs.current[item.id]) {
               itemOutputs.current[item.id] = "";
@@ -1119,7 +1204,13 @@ export function WorkflowView({
       console.error("HIL submission error:", error);
       setIsStreaming(false);
     }
-  }, [selectedWorkflow, hilResponses, onDebugEvent, currentSession, selectedCheckpointId]);
+  }, [
+    selectedWorkflow,
+    hilResponses,
+    onDebugEvent,
+    currentSession,
+    selectedCheckpointId,
+  ]);
 
   // Show loading state when workflow is being loaded
   if (workflowLoading) {
@@ -1128,6 +1219,41 @@ export function WorkflowView({
         message="Loading workflow..."
         description="Fetching workflow structure and configuration"
       />
+    );
+  }
+
+  // Show error state if workflow failed to load
+  if (workflowLoadError) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center max-w-md p-6">
+          <div className="text-red-500 mb-4">
+            <svg
+              className="w-16 h-16 mx-auto"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold mb-2">
+            Failed to Load Workflow
+          </h3>
+          <p className="text-sm text-muted-foreground mb-4">
+            {workflowLoadError}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            This may not be a valid workflow entity. Check the file contains a
+            workflow export.
+          </p>
+        </div>
+      </div>
     );
   }
 
@@ -1167,7 +1293,9 @@ export function WorkflowView({
               variant="ghost"
               size="sm"
               onClick={handleReloadEntity}
-              disabled={isReloading || selectedWorkflow.metadata?.source === "in_memory"}
+              disabled={
+                isReloading || selectedWorkflow.metadata?.source === "in_memory"
+              }
               className="h-6 w-6 p-0 flex-shrink-0"
               title={
                 selectedWorkflow.metadata?.source === "in_memory"
@@ -1177,7 +1305,9 @@ export function WorkflowView({
                   : "Reload entity code (hot reload)"
               }
             >
-              <RefreshCw className={`h-4 w-4 ${isReloading ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-4 w-4 ${isReloading ? "animate-spin" : ""}`}
+              />
             </Button>
           </div>
 
@@ -1202,19 +1332,32 @@ export function WorkflowView({
                   >
                     {currentSession && (
                       <div className="flex items-center gap-2 text-xs">
-                        <span>{currentSession.metadata.name || `Conversation ${currentSession.conversation_id.slice(-8)}`}</span>
+                        <span>
+                          {currentSession.metadata.name ||
+                            `Conversation ${currentSession.conversation_id.slice(
+                              -8
+                            )}`}
+                        </span>
                       </div>
                     )}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {availableSessions.map((session) => (
-                    <SelectItem key={session.conversation_id} value={session.conversation_id}>
+                    <SelectItem
+                      key={session.conversation_id}
+                      value={session.conversation_id}
+                    >
                       <div className="flex items-center justify-between w-full">
-                        <span>{session.metadata.name || `Conversation ${session.conversation_id.slice(-8)}`}</span>
+                        <span>
+                          {session.metadata.name ||
+                            `Conversation ${session.conversation_id.slice(-8)}`}
+                        </span>
                         {session.created_at && (
                           <span className="text-xs text-muted-foreground ml-3">
-                            {new Date(session.created_at * 1000).toLocaleTimeString()}
+                            {new Date(
+                              session.created_at * 1000
+                            ).toLocaleTimeString()}
                           </span>
                         )}
                       </div>
@@ -1232,7 +1375,7 @@ export function WorkflowView({
                 className="h-9 w-9 p-0"
                 title="Delete current session"
               >
-                <Trash2 className="h-4 w-4 text-red-500" />
+                <Trash2 className="h-4 w-4 " />
               </Button>
 
               {/* New Session Button */}
@@ -1248,11 +1391,11 @@ export function WorkflowView({
               </Button>
 
               {/* Checkpoint Dropdown */}
-              <CheckpointSelector
+              {/* <CheckpointSelector
                 conversationId={currentSession?.conversation_id}
                 selectedCheckpoint={selectedCheckpointId || undefined}
                 onCheckpointSelect={(checkpointId) => setSelectedCheckpointId(checkpointId || null)}
-              />
+              /> */}
 
               {/* Run Button */}
               <RunWorkflowButton
@@ -1294,6 +1437,7 @@ export function WorkflowView({
               onToggleViewOption={toggleViewOption}
               layoutDirection={layoutDirection}
               onLayoutDirectionChange={setLayoutDirection}
+              timelineVisible={showTimeline}
             />
           )}
         </div>
@@ -1303,7 +1447,7 @@ export function WorkflowView({
           <div
             className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-out border-l"
             style={{
-              width: timelineMinimized ? '2.5rem' : '24rem',
+              width: timelineMinimized ? "2.5rem" : "24rem",
             }}
           >
             {timelineMinimized ? (
@@ -1323,17 +1467,19 @@ export function WorkflowView({
                   <div
                     className="text-xs text-muted-foreground select-none"
                     style={{
-                      writingMode: 'vertical-rl',
-                      transform: 'rotate(180deg)'
+                      writingMode: "vertical-rl",
+                      transform: "rotate(180deg)",
                     }}
                   >
                     Execution Timeline
                   </div>
                   {workflowEvents.length > 0 && (
-                    <div className={`bg-primary text-primary-foreground rounded-full w-5 h-5 flex items-center justify-center ${
-                      isStreaming ? 'animate-pulse' : ''
-                    }`}
-                    style={{ fontSize: '10px' }}>
+                    <div
+                      className={`bg-primary text-primary-foreground rounded-full w-5 h-5 flex items-center justify-center ${
+                        isStreaming ? "animate-pulse" : ""
+                      }`}
+                      style={{ fontSize: "10px" }}
+                    >
                       {workflowEvents.length}
                     </div>
                   )}
@@ -1347,10 +1493,12 @@ export function WorkflowView({
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-medium">Execution Timeline</h3>
                     {workflowEvents.length > 0 && (
-                      <div className={`bg-primary text-primary-foreground rounded-full px-2 h-5 flex items-center justify-center ${
-                        isStreaming ? 'animate-pulse' : ''
-                      }`}
-                      style={{ fontSize: '11px', minWidth: '20px' }}>
+                      <div
+                        className={`bg-primary text-primary-foreground rounded-full px-2 h-5 flex items-center justify-center ${
+                          isStreaming ? "animate-pulse" : ""
+                        }`}
+                        style={{ fontSize: "11px", minWidth: "20px" }}
+                      >
                         {workflowEvents.length}
                       </div>
                     )}
@@ -1370,7 +1518,9 @@ export function WorkflowView({
                   <ExecutionTimeline
                     events={workflowEvents}
                     itemOutputs={itemOutputs.current}
-                    currentExecutorId={activeExecutors[activeExecutors.length - 1] || null}
+                    currentExecutorId={
+                      activeExecutors[activeExecutors.length - 1] || null
+                    }
                     isStreaming={isStreaming}
                     onExecutorClick={handleNodeSelect}
                     selectedExecutorId={selectedExecutorId}

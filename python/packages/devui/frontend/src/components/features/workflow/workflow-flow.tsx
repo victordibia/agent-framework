@@ -211,6 +211,7 @@ interface WorkflowFlowProps {
   ) => void;
   layoutDirection?: "LR" | "TB";
   onLayoutDirectionChange?: (direction: "LR" | "TB") => void;
+  timelineVisible?: boolean;
 }
 
 // Animation handler component that runs inside ReactFlow context
@@ -261,6 +262,24 @@ function WorkflowAnimationHandler({
   return null; // This component doesn't render anything
 }
 
+// Timeline resize handler component that runs inside ReactFlow context
+const TimelineResizeHandler = memo(({ timelineVisible }: { timelineVisible: boolean }) => {
+  const { fitView } = useReactFlow();
+
+  // Trigger fitView when timeline visibility changes to adjust ReactFlow viewport
+  useEffect(() => {
+    // Delay fitView to let CSS transition complete (timeline animation is 300ms)
+    const timeoutId = setTimeout(() => {
+      fitView({ padding: 0.2, duration: 300 });
+    }, 350); // Slightly longer than timeline animation duration
+
+    return () => clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineVisible]); // Only trigger when timelineVisible changes, not fitView reference
+
+  return null; // This component doesn't render anything
+});
+
 export const WorkflowFlow = memo(function WorkflowFlow({
   workflowDump,
   events,
@@ -271,6 +290,7 @@ export const WorkflowFlow = memo(function WorkflowFlow({
   onToggleViewOption,
   layoutDirection = "LR",
   onLayoutDirectionChange,
+  timelineVisible = false,
 }: WorkflowFlowProps) {
   // Create initial nodes and edges from workflow dump
   const { initialNodes, initialEdges } = useMemo(() => {
@@ -492,6 +512,7 @@ export const WorkflowFlow = memo(function WorkflowFlow({
           isStreaming={isStreaming}
           animateRun={viewOptions.animateRun}
         />
+        <TimelineResizeHandler timelineVisible={timelineVisible} />
         <ViewOptionsPanel
           workflowDump={workflowDump}
           onNodeSelect={onNodeSelect}

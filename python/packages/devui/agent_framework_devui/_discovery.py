@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import logging
@@ -518,12 +519,47 @@ class EntityDiscovery:
         self._entities[entity_id] = entity_info
         logger.debug(f"Registered sparse entity: {entity_id} (type: {entity_type})")
 
+    def _has_entity_exports(self, file_path: Path) -> bool:
+        """Check if a Python file has entity exports (agent or workflow) using AST parsing.
+
+        This safely checks for module-level assignments like:
+        - agent = ChatAgent(...)
+        - workflow = WorkflowBuilder()...
+
+        Args:
+            file_path: Python file to check
+
+        Returns:
+            True if file has 'agent' or 'workflow' exports
+        """
+        try:
+            # Read and parse the file's AST
+            source = file_path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(file_path))
+
+            # Look for module-level assignments of 'agent' or 'workflow'
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id in ("agent", "workflow"):
+                            return True
+        except Exception as e:
+            logger.debug(f"Could not parse {file_path} for entity exports: {e}")
+            return False
+
+        return False
+
     def _register_sparse_file_entity(self, file_path: Path) -> None:
         """Register file-based entity with sparse metadata (no import).
 
         Args:
             file_path: Entity Python file
         """
+        # Check if file has valid entity exports using AST parsing
+        if not self._has_entity_exports(file_path):
+            logger.debug(f"Skipping {file_path.name} - no 'agent' or 'workflow' exports found")
+            return
+
         entity_id = file_path.stem
 
         # Check deployment support (file-based entities cannot be deployed)

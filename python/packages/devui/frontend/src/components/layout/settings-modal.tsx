@@ -23,7 +23,7 @@ interface SettingsModalProps {
   onBackendUrlChange?: (url: string) => void;
 }
 
-type Tab = "backend" | "proxy" | "about";
+type Tab = "general" | "proxy" | "about";
 
 // Preset OpenAI models for quick selection
 const PRESET_MODELS = [
@@ -39,10 +39,10 @@ export function SettingsModal({
   onOpenChange,
   onBackendUrlChange,
 }: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("backend");
+  const [activeTab, setActiveTab] = useState<Tab>("general");
 
-  // OpenAI proxy mode from store
-  const { oaiMode, setOAIMode } = useDevUIStore();
+  // OpenAI proxy mode, Azure deployment, and auth status from store
+  const { oaiMode, setOAIMode, azureDeploymentEnabled, setAzureDeploymentEnabled, authRequired } = useDevUIStore();
 
   // Get current backend URL from localStorage or default
   const defaultUrl = import.meta.env.VITE_API_BASE_URL !== undefined ? import.meta.env.VITE_API_BASE_URL : "";
@@ -50,6 +50,10 @@ export function SettingsModal({
     return localStorage.getItem("devui_backend_url") || defaultUrl;
   });
   const [tempUrl, setTempUrl] = useState(backendUrl);
+
+  // Auth token state
+  const [authTokenStored, setAuthTokenStored] = useState(!!localStorage.getItem("devui_auth_token"));
+  const [newAuthToken, setNewAuthToken] = useState("");
 
   const handleSave = () => {
     // Validate URL format
@@ -77,6 +81,26 @@ export function SettingsModal({
     window.location.reload();
   };
 
+  const handleAuthTokenSave = () => {
+    if (!newAuthToken.trim()) return;
+
+    localStorage.setItem("devui_auth_token", newAuthToken.trim());
+    setAuthTokenStored(true);
+    setNewAuthToken("");
+
+    // Reload to apply the auth token
+    window.location.reload();
+  };
+
+  const handleClearAuthToken = () => {
+    localStorage.removeItem("devui_auth_token");
+    setAuthTokenStored(false);
+    setNewAuthToken("");
+
+    // Reload to clear auth state
+    window.location.reload();
+  };
+
   const isModified = tempUrl !== backendUrl;
   const isDefault = !localStorage.getItem("devui_backend_url");
 
@@ -92,15 +116,15 @@ export function SettingsModal({
         {/* Tabs */}
         <div className="flex border-b px-6 flex-shrink-0">
           <button
-            onClick={() => setActiveTab("backend")}
+            onClick={() => setActiveTab("general")}
             className={`px-4 py-2 text-sm font-medium transition-colors relative ${
-              activeTab === "backend"
+              activeTab === "general"
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            Backend
-            {activeTab === "backend" && (
+            General
+            {activeTab === "general" && (
               <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
             )}
           </button>
@@ -134,7 +158,7 @@ export function SettingsModal({
 
         {/* Tab Content - Scrollable with min-height */}
         <div className="px-6 pb-6 overflow-y-auto flex-1 min-h-[400px]">
-          {activeTab === "backend" && (
+          {activeTab === "general" && (
             <div className="space-y-6 pt-4">
               {/* Backend URL Setting */}
               <div className="space-y-3">
@@ -187,6 +211,125 @@ export function SettingsModal({
                     </>
                   )}
                 </div>
+              </div>
+
+              {/* Auth Token Setting - Only show if backend requires auth OR token is already stored */}
+              {(authRequired || authTokenStored) && (
+                <div className="space-y-3 border-t pt-6">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">
+                      Authentication Token
+                    </Label>
+                    {!authRequired && authTokenStored && (
+                      <span className="text-xs text-muted-foreground">
+                        (Not required by current backend)
+                      </span>
+                    )}
+                  </div>
+
+                  {authTokenStored ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="password"
+                        value="••••••••••••••••••••"
+                        disabled
+                        className="font-mono text-sm flex-1"
+                      />
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleClearAuthToken}
+                        className="flex-shrink-0"
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                    <p className="text-xs text-green-600 dark:text-green-400">
+                      ✓ Token configured and stored locally
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <Input
+                      type="password"
+                      value={newAuthToken}
+                      onChange={(e) => setNewAuthToken(e.target.value)}
+                      placeholder="Enter bearer token"
+                      className="font-mono text-sm"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newAuthToken.trim()) {
+                          handleAuthTokenSave();
+                        }
+                      }}
+                    />
+                    <Button
+                      onClick={handleAuthTokenSave}
+                      size="sm"
+                      disabled={!newAuthToken.trim()}
+                      className="w-full"
+                    >
+                      Save & Reload
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      {authRequired
+                        ? "Required by backend (started with --auth flag)"
+                        : "Not required by current backend"}
+                    </p>
+                  </div>
+                  )}
+                </div>
+              )}
+
+              {/* Deployment Setting */}
+              <div className="space-y-3 border-t pt-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="text-sm font-medium">
+                      Azure Deployment
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Enable one-click deployment to Azure Container Apps
+                    </p>
+                  </div>
+                  <Switch
+                    checked={azureDeploymentEnabled}
+                    onCheckedChange={setAzureDeploymentEnabled}
+                  />
+                </div>
+
+                {/* Expandable info section */}
+                <details className="group">
+                  <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
+                    <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                    Learn more about Azure deployment
+                  </summary>
+                  <div className="mt-3 space-y-3 pl-4">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      When enabled, agents that support deployment will show a "Deploy to Azure"
+                      button. This allows you to deploy your agent to Azure Container Apps directly
+                      from DevUI.
+                    </p>
+
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium">When enabled:</p>
+                      <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                        <li>Shows "Deploy to Azure" for supported agents</li>
+                        <li>Requires Azure CLI and proper authentication</li>
+                        <li>Backend must have deployment capabilities enabled</li>
+                      </ul>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium">When disabled:</p>
+                      <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                        <li>Shows "Deployment Guide" for all agents</li>
+                        <li>Provides Docker templates and manual deployment instructions</li>
+                        <li>No backend deployment capabilities required</li>
+                      </ul>
+                    </div>
+                  </div>
+                </details>
               </div>
             </div>
           )}

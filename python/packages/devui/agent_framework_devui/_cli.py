@@ -58,8 +58,24 @@ Examples:
     parser.add_argument(
         "--mode",
         choices=["developer", "user"],
-        default="developer",
-        help="UI interface mode - 'developer' shows debug tools, 'user' shows simplified interface",
+        default=None,
+        help="Server mode - 'developer' (full access, verbose errors) or 'user' (restricted APIs, generic errors)",
+    )
+
+    # Add --dev/--no-dev as a convenient alternative to --mode
+    parser.add_argument(
+        "--dev",
+        dest="dev_mode",
+        action="store_true",
+        default=None,
+        help="Enable developer mode (shorthand for --mode developer)",
+    )
+
+    parser.add_argument(
+        "--no-dev",
+        dest="dev_mode",
+        action="store_false",
+        help="Disable developer mode (shorthand for --mode user)",
     )
 
     parser.add_argument(
@@ -107,7 +123,9 @@ def validate_directory(directory: str) -> str:
     return abs_dir
 
 
-def print_startup_info(entities_dir: str, host: str, port: int, ui_enabled: bool, reload: bool) -> None:
+def print_startup_info(
+    entities_dir: str, host: str, port: int, ui_enabled: bool, reload: bool, auth_token: str | None = None
+) -> None:
     """Print startup information."""
     print("Agent Framework DevUI")  # noqa: T201
     print("=" * 50)  # noqa: T201
@@ -115,6 +133,13 @@ def print_startup_info(entities_dir: str, host: str, port: int, ui_enabled: bool
     print(f"Server URL: http://{host}:{port}")  # noqa: T201
     print(f"UI enabled: {'Yes' if ui_enabled else 'No'}")  # noqa: T201
     print(f"Auto-reload: {'Yes' if reload else 'No'}")  # noqa: T201
+
+    # Display auth token if authentication is enabled
+    if auth_token:
+        print("Authentication: Enabled")  # noqa: T201
+        print(f"Auth token: {auth_token}")  # noqa: T201
+        print("💡 Use this token in Authorization: Bearer <token> header")  # noqa: T201
+
     print("=" * 50)  # noqa: T201
     print("Scanning for entities...")  # noqa: T201
 
@@ -133,8 +158,19 @@ def main() -> None:
     # Extract parameters directly from args
     ui_enabled = not args.headless
 
-    # Print startup info
-    print_startup_info(entities_dir, args.host, args.port, ui_enabled, args.reload)
+    # Determine mode from --mode or --dev/--no-dev flags
+    if args.dev_mode is not None:
+        # --dev or --no-dev was specified
+        mode = "developer" if args.dev_mode else "user"
+    elif args.mode is not None:
+        # --mode was specified
+        mode = args.mode
+    else:
+        # Default to developer mode
+        mode = "developer"
+
+    # Print startup info (don't show token - serve() will handle it)
+    print_startup_info(entities_dir, args.host, args.port, ui_enabled, args.reload, None)
 
     # Import and start server
     try:
@@ -147,9 +183,9 @@ def main() -> None:
             auto_open=not args.no_open,
             ui_enabled=ui_enabled,
             tracing_enabled=args.tracing,
-            ui_mode=args.mode,
+            mode=mode,
             auth_enabled=args.auth,
-            auth_token=args.auth_token,
+            auth_token=args.auth_token,  # Pass through explicit token only
         )
 
     except KeyboardInterrupt:

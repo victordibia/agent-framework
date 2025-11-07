@@ -68,8 +68,8 @@ const DEFAULT_API_BASE_URL =
     : ""; // Default to relative URLs (same host as frontend)
 
 // Retry configuration for streaming
-const RETRY_INTERVAL_MS = 1000; // Retry every second
-const MAX_RETRY_ATTEMPTS = 600; // Max 600 retries (10 minutes total)
+const RETRY_INTERVAL_MS = 1000; // Base retry interval (will use exponential backoff)
+const MAX_RETRY_ATTEMPTS = 10; // Max 10 retries (~30 seconds with exponential backoff)
 
 // Get backend URL from localStorage or default
 function getBackendUrl(): string {
@@ -86,9 +86,12 @@ function sleep(ms: number): Promise<void> {
 
 class ApiClient {
   private baseUrl: string;
+  private authToken: string | null = null;
 
   constructor(baseUrl?: string) {
     this.baseUrl = baseUrl || getBackendUrl();
+    // Load auth token from localStorage on initialization
+    this.authToken = localStorage.getItem("devui_auth_token");
   }
 
   // Allow updating the base URL at runtime
@@ -100,27 +103,62 @@ class ApiClient {
     return this.baseUrl;
   }
 
+  // Set auth token and persist to localStorage
+  setAuthToken(token: string | null): void {
+    this.authToken = token;
+    if (token) {
+      localStorage.setItem("devui_auth_token", token);
+    } else {
+      localStorage.removeItem("devui_auth_token");
+    }
+  }
+
+  // Get current auth token
+  getAuthToken(): string | null {
+    return this.authToken;
+  }
+
+  // Clear auth token
+  clearAuthToken(): void {
+    this.setAuthToken(null);
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
+    // Build headers with auth token if available
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(options.headers as Record<string, string>),
+    };
+
+    if (this.authToken) {
+      headers["Authorization"] = `Bearer ${this.authToken}`;
+    }
+
     const response = await fetch(url, {
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
       ...options,
+      headers,
     });
 
     if (!response.ok) {
+      // Handle 401 Unauthorized - clear invalid token
+      if (response.status === 401) {
+        this.clearAuthToken();
+        throw new Error("UNAUTHORIZED");
+      }
+
       // Try to extract error message from response body
       let errorMessage = `API request failed: ${response.status} ${response.statusText}`;
       try {
         const errorData = await response.json();
         if (errorData.detail) {
           errorMessage = errorData.detail;
+        } else if (errorData.error?.message) {
+          errorMessage = errorData.error.message;
         }
       } catch {
         // If parsing fails, use default message
@@ -449,11 +487,19 @@ class ApiClient {
             params.set("starting_after", lastSequenceNumber.toString());
           }
           const url = `${this.baseUrl}/v1/responses/${currentResponseId}?${params.toString()}`;
+
+          const headers: Record<string, string> = {
+            Accept: "text/event-stream",
+          };
+
+          // Add auth token if available
+          if (this.authToken) {
+            headers["Authorization"] = `Bearer ${this.authToken}`;
+          }
+
           response = await fetch(url, {
             method: "GET",
-            headers: {
-              Accept: "text/event-stream",
-            },
+            headers,
           });
         } else {
           const url = `${this.baseUrl}/v1/responses`;
@@ -467,6 +513,11 @@ class ApiClient {
             headers["X-Proxy-Backend"] = "openai";
           }
 
+          // Add auth token if available
+          if (this.authToken) {
+            headers["Authorization"] = `Bearer ${this.authToken}`;
+          }
+
           response = await fetch(url, {
             method: "POST",
             headers,
@@ -475,7 +526,29 @@ class ApiClient {
         }
 
         if (!response.ok) {
-          // Try to extract detailed error message from response body
+          // Handle authentication errors - don't retry these
+          if (response.status === 401) {
+            this.clearAuthToken(); // Clear invalid token
+            throw new Error("UNAUTHORIZED"); // Special error that won't be retried
+          }
+
+          // Handle other client errors (400-499) - don't retry these either
+          if (response.status >= 400 && response.status < 500) {
+            let errorMessage = `Client error ${response.status}`;
+            try {
+              const errorBody = await response.json();
+              if (errorBody.error && errorBody.error.message) {
+                errorMessage = errorBody.error.message;
+              } else if (errorBody.detail) {
+                errorMessage = errorBody.detail;
+              }
+            } catch {
+              // Fallback to generic message
+            }
+            throw new Error(`CLIENT_ERROR: ${errorMessage}`);
+          }
+
+          // Server errors (500-599) - these can be retried
           let errorMessage = `Request failed with status ${response.status}`;
           try {
             const errorBody = await response.json();
@@ -608,18 +681,26 @@ class ApiClient {
           reader.releaseLock();
         }
       } catch (error) {
-        // Network error occurred - prepare to retry
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        // Don't retry on auth errors or client errors
+        if (errorMessage === "UNAUTHORIZED" || errorMessage.startsWith("CLIENT_ERROR:")) {
+          throw error; // Re-throw without retrying
+        }
+
+        // Network error or server error occurred - prepare to retry
         retryCount++;
 
         if (retryCount > MAX_RETRY_ATTEMPTS) {
           // Max retries exceeded - give up
           throw new Error(
-            `Connection failed after ${MAX_RETRY_ATTEMPTS} retry attempts: ${error instanceof Error ? error.message : String(error)}`
+            `Connection failed after ${MAX_RETRY_ATTEMPTS} retry attempts: ${errorMessage}`
           );
         }
 
-        // Wait before retrying
-        await sleep(RETRY_INTERVAL_MS);
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
+        const retryDelay = Math.min(RETRY_INTERVAL_MS * Math.pow(2, retryCount - 1), 30000);
+        await sleep(retryDelay);
         // Loop will retry with GET if we have response_id, otherwise POST
       }
     }
