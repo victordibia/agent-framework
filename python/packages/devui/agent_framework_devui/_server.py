@@ -420,7 +420,6 @@ class DevServer:
         @app.get("/v1/entities/{entity_id}/info", response_model=EntityInfo)
         async def get_entity_info(entity_id: str) -> EntityInfo:
             """Get detailed information about a specific entity (triggers lazy loading)."""
-            self._require_developer_mode("entity details")
             try:
                 executor = await self._ensure_executor()
                 entity_info = executor.get_entity_info(entity_id)

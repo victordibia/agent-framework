@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   Workflow,
   Home,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -194,18 +195,16 @@ export const ExecutorNode = memo(({ data, selected }: NodeProps) => {
                 <Workflow className="w-5 h-5 text-gray-300 dark:text-gray-400" />
               )}
             </div>
-            {/* Small status badge for running state */}
-            {isRunning && (
-              <div className={cn(
-                "absolute -top-1 -right-1 w-3 h-3 rounded-full animate-pulse",
-                config.badgeColor
-              )} />
-            )}
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
-              {nodeData.name || nodeData.executorId}
-            </h3>
+            <div className="flex items-center gap-1.5">
+              <h3 className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
+                {nodeData.name || nodeData.executorId}
+              </h3>
+              {isRunning && (
+                <Loader2 className="w-4 h-4 text-[#643FB2] dark:text-[#8B5CF6] animate-spin flex-shrink-0" />
+              )}
+            </div>
             {nodeData.executorType && (
               <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
                 {nodeData.executorType}

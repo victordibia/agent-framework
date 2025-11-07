@@ -155,8 +155,14 @@ class ApiClient {
       let errorMessage = `API request failed: ${response.status} ${response.statusText}`;
       try {
         const errorData = await response.json();
+        // Handle detail as string or object
         if (errorData.detail) {
-          errorMessage = errorData.detail;
+          if (typeof errorData.detail === "string") {
+            errorMessage = errorData.detail;
+          } else if (typeof errorData.detail === "object" && errorData.detail.error?.message) {
+            // Backend returns detail: { error: { message: "...", type: "...", code: "..." } }
+            errorMessage = errorData.detail.error.message;
+          }
         } else if (errorData.error?.message) {
           errorMessage = errorData.error.message;
         }
