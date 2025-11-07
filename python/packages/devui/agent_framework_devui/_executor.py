@@ -325,7 +325,7 @@ class AgentFrameworkExecutor:
             Workflow events and trace events
         """
         try:
-            entity_id = request.get_entity_id()
+            entity_id = request.get_entity_id() or "unknown"
 
             # Get or create session conversation for checkpoint storage
             conversation_id = request.get_conversation_id()
