@@ -750,6 +750,10 @@ export function WorkflowView({
           checkpoint_id: selectedCheckpointId || undefined  // Pass selected checkpoint if any
         };
 
+        // Clear any previous streaming state before starting new workflow execution
+        // Note: Workflows don't use conversation IDs, so we use workflow ID as the key
+        apiClient.clearStreamingState(selectedWorkflow.id);
+
         // Use OpenAI-compatible API streaming - direct event handling
         const streamGenerator = apiClient.streamWorkflowExecutionOpenAI(
           selectedWorkflow.id,

@@ -26,7 +26,7 @@ interface ContentRendererProps {
 
 // Text content renderer
 function TextContentRenderer({ content, className, isStreaming }: ContentRendererProps) {
-  if (content.type !== "text") return null;
+  if (content.type !== "text" && content.type !== "input_text" && content.type !== "output_text") return null;
 
   const text = content.text;
 
@@ -286,6 +286,8 @@ function FunctionApprovalRequestRenderer({ content, className }: ContentRenderer
 export function OpenAIContentRenderer({ content, className, isStreaming }: ContentRendererProps) {
   switch (content.type) {
     case "text":
+    case "input_text":
+    case "output_text":
       return <TextContentRenderer content={content} className={className} isStreaming={isStreaming} />;
     case "input_image":
     case "output_image":

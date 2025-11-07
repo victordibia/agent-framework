@@ -398,6 +398,18 @@ export interface MessageTextContent {
   text: string;
 }
 
+export interface MessageInputTextContent {
+  type: "input_text";
+  text: string;
+}
+
+export interface MessageOutputTextContent {
+  type: "output_text";
+  text: string;
+  annotations?: any[];
+  logprobs?: any[];
+}
+
 export interface MessageInputImage {
   type: "input_image";
   image_url: string;
@@ -468,6 +480,8 @@ export interface MessageOutputData {
 
 export type MessageContent =
   | MessageTextContent
+  | MessageInputTextContent
+  | MessageOutputTextContent
   | MessageInputImage
   | MessageInputFile
   | MessageOutputImage
