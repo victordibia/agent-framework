@@ -67,7 +67,26 @@ internal static class Program
         builder.Services.AddOpenAIResponses();
         builder.Services.AddOpenAIConversations();
 
+        // Add CORS only in Development for local frontend testing
+        if (builder.Environment.IsDevelopment())
+        {
+            builder.Services.AddCors(options =>
+            {
+                options.AddDefaultPolicy(policy =>
+                {
+                    policy.WithOrigins("http://localhost:5173", "http://localhost:3000")
+                          .AllowAnyMethod()
+                          .AllowAnyHeader();
+                });
+            });
+        }
+
         var app = builder.Build();
+
+        if (builder.Environment.IsDevelopment())
+        {
+            app.UseCors();
+        }
 
         app.MapOpenAIResponses();
         app.MapOpenAIConversations();
