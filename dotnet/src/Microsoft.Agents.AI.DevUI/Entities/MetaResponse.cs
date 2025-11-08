@@ -32,10 +32,18 @@ internal sealed record MetaResponse
 
     /// <summary>
     /// Gets the backend framework identifier.
-    /// Always "dotnet" for .NET implementations.
+    /// Always "agent_framework" for Agent Framework implementations.
     /// </summary>
     [JsonPropertyName("framework")]
-    public string Framework { get; init; } = "dotnet";
+    public string Framework { get; init; } = "agent_framework";
+
+    /// <summary>
+    /// Gets the backend runtime/language.
+    /// "dotnet" for .NET implementations, "python" for Python implementations.
+    /// Used by frontend for deployment guides and feature availability.
+    /// </summary>
+    [JsonPropertyName("runtime")]
+    public string Runtime { get; init; } = "dotnet";
 
     /// <summary>
     /// Gets the server capabilities dictionary.

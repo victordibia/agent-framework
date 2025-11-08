@@ -40,14 +40,18 @@ internal static class MetaApiExtensions
         {
             UiMode = "developer", // Could be made configurable to support "user" mode
             Version = "0.1.0", // TODO: Extract from assembly version attribute
-            Framework = "dotnet",
+            Framework = "agent_framework",
+            Runtime = "dotnet", // .NET runtime for deployment guides
             Capabilities = new Dictionary<string, bool>
             {
                 // Tracing capability - will be enabled when trace event support is added
                 ["tracing"] = false,
 
                 // OpenAI proxy capability - not currently supported in .NET DevUI
-                ["openai_proxy"] = false
+                ["openai_proxy"] = false,
+
+                // Deployment capability - not currently supported in .NET DevUI
+                ["deployment"] = false
             },
             AuthRequired = false // Could be made configurable based on authentication middleware
         };
